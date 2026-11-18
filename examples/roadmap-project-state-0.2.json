@@ -1,0 +1,1229 @@
+{
+  "schemaVersion": "0.2",
+  "stateVersion": 11,
+  "project": {
+    "id": "project:example-roadmap",
+    "name": "Example Roadmap Fixture",
+    "roots": [
+      "apps/storefront"
+    ],
+    "scopeDescription": "Synthetic planning fixture only. It is not a real product roadmap, commitment, schedule or decision record."
+  },
+  "activeBaselineId": "baseline:demo-1",
+  "baselines": [
+    {
+      "id": "baseline:demo-1",
+      "revision": {
+        "commit": "demo-revision",
+        "branch": "example",
+        "worktree": "clean",
+        "label": "Synthetic 0.2 roadmap fixture"
+      },
+      "scope": {
+        "description": "Public storefront product browsing",
+        "includedPaths": [
+          "apps/storefront/routes/product-detail.ts"
+        ],
+        "excludedPaths": [],
+        "coverageNote": "Synthetic roadmap data for exercising local readers only; not a product plan"
+      },
+      "createdAt": "2026-11-10T00:00:00Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "goal:easy-shopping",
+      "kind": "product_goal",
+      "label": "Make product discovery easy",
+      "description": "Illustrative product goal for the sample storefront.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:overview"
+      ]
+    },
+    {
+      "id": "group:guest",
+      "kind": "user_group",
+      "label": "Guest shopper",
+      "description": "A visitor who has not signed in.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:overview"
+      ]
+    },
+    {
+      "id": "task:view-public-product",
+      "kind": "user_task",
+      "label": "View a public product",
+      "description": "Open a public product detail before deciding whether to buy.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:guide"
+      ]
+    },
+    {
+      "id": "task:create-note",
+      "kind": "user_task",
+      "label": "Create a note",
+      "description": "A task with no claim yet, intentionally not confirmed by its title.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:note-policy"
+      ]
+    },
+    {
+      "id": "commitment:guest-access",
+      "kind": "behavior_commitment",
+      "label": "Public details are viewable without sign-in",
+      "description": "Migrated 0.1 node; its old decision is not aligned to the new claim.",
+      "status": "candidate",
+      "conditions": [
+        "Synthetic legacy condition: app shell only"
+      ],
+      "evidenceIds": [
+        "evidence:guide"
+      ],
+      "legacy": {
+        "schemaVersion": "0.1",
+        "snapshot": {
+          "id": "commitment:guest-access",
+          "kind": "behavior_commitment",
+          "label": "Public details are viewable without sign-in",
+          "description": "Synthetic example: no product decision has been recorded.",
+          "status": "confirmed",
+          "conditions": [
+            "Synthetic legacy condition: app shell only"
+          ],
+          "decisionId": "decision:legacy-guest",
+          "evidenceIds": [
+            "evidence:guide"
+          ]
+        }
+      }
+    },
+    {
+      "id": "commitment:note-limit",
+      "kind": "behavior_commitment",
+      "label": "New note text is limited",
+      "description": "Stopped intent retained for history.",
+      "status": "retired",
+      "evidenceIds": [
+        "evidence:note-policy"
+      ]
+    },
+    {
+      "id": "capability:product-details",
+      "kind": "capability",
+      "label": "Product detail page",
+      "description": "Show public product information.",
+      "status": "confirmed",
+      "evidenceIds": [
+        "evidence:route"
+      ]
+    },
+    {
+      "id": "capability:saved-views",
+      "kind": "capability",
+      "label": "Saved map views",
+      "description": "Synthetic Feature for the roadmap projection example; no product decision is recorded.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:overview"
+      ]
+    },
+    {
+      "id": "capability:planning-digest",
+      "kind": "capability",
+      "label": "Planning digest",
+      "description": "Synthetic Feature used to show a later planning horizon; it is not a commitment.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:guide"
+      ]
+    },
+    {
+      "id": "capability:offline-import",
+      "kind": "capability",
+      "label": "Offline map import",
+      "description": "Synthetic Feature used to show an unplanned position; it is not scheduled.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:overview"
+      ]
+    },
+    {
+      "id": "capability:audit-export",
+      "kind": "capability",
+      "label": "Decision audit export",
+      "description": "Synthetic Feature used to show a closed planning item; closure is not implementation or test evidence.",
+      "status": "candidate",
+      "evidenceIds": [
+        "evidence:overview"
+      ]
+    },
+    {
+      "id": "impl:product-route",
+      "kind": "implementation",
+      "label": "Product detail route",
+      "description": "Illustrative source location; it is not present in this package.",
+      "status": "observed",
+      "conditions": [
+        "Example evidence only; no runtime claim."
+      ],
+      "evidenceIds": [
+        "evidence:route"
+      ]
+    },
+    {
+      "id": "verify:guest-test",
+      "kind": "verification",
+      "label": "Guest-access test",
+      "description": "The example contains a test definition, not a test execution.",
+      "status": "observed",
+      "evidenceIds": [
+        "evidence:test"
+      ]
+    },
+    {
+      "id": "unknown:analytics",
+      "kind": "unknown",
+      "label": "Analytics retention",
+      "description": "No evidence-backed intent was extracted.",
+      "status": "unknown",
+      "evidenceIds": [
+        "evidence:overview"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:goal-task",
+      "from": "goal:easy-shopping",
+      "kind": "contains",
+      "to": "task:view-public-product"
+    },
+    {
+      "id": "edge:goal-note-task",
+      "from": "goal:easy-shopping",
+      "kind": "contains",
+      "to": "task:create-note"
+    },
+    {
+      "id": "edge:task-commitment",
+      "from": "task:view-public-product",
+      "kind": "contains",
+      "to": "commitment:guest-access"
+    },
+    {
+      "id": "edge:note-task-commitment",
+      "from": "task:create-note",
+      "kind": "contains",
+      "to": "commitment:note-limit"
+    },
+    {
+      "id": "edge:task-group",
+      "from": "task:view-public-product",
+      "kind": "serves",
+      "to": "group:guest"
+    },
+    {
+      "id": "edge:capability-implementation",
+      "from": "capability:product-details",
+      "kind": "implemented_by",
+      "to": "impl:product-route"
+    },
+    {
+      "id": "edge:commitment-test",
+      "from": "commitment:guest-access",
+      "kind": "verified_by",
+      "to": "verify:guest-test"
+    },
+    {
+      "id": "edge:commitment-capability",
+      "from": "commitment:guest-access",
+      "kind": "constrains",
+      "to": "capability:product-details"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "evidence:overview",
+      "kind": "product_document",
+      "claim": "Synthetic overview describes easier product discovery.",
+      "revision": "demo-revision",
+      "path": "docs/product-overview.md",
+      "locator": "Product goal",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:guide",
+      "kind": "product_document",
+      "claim": "Synthetic guide describes public product browsing.",
+      "revision": "demo-revision",
+      "path": "docs/customer-guide.md",
+      "locator": "Browse products",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:route",
+      "kind": "implementation",
+      "claim": "Synthetic route reference used to illustrate evidence drilldown.",
+      "revision": "demo-revision",
+      "path": "apps/storefront/routes/product-detail.ts",
+      "locator": "GET /products/:id",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:test",
+      "kind": "test_definition",
+      "claim": "Synthetic test definition asserts guest access; it was not run.",
+      "revision": "demo-revision",
+      "path": "apps/storefront/routes/product-detail.test.ts",
+      "locator": "guest can view public product",
+      "validation": "defined_only"
+    },
+    {
+      "id": "evidence:note-policy",
+      "kind": "product_document",
+      "claim": "Synthetic note policy describes the former 500-character limit.",
+      "revision": "demo-revision",
+      "path": "docs/note-policy.md",
+      "locator": "Note body",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:legacy-user",
+      "kind": "user_statement",
+      "claim": "Synthetic legacy user choice approved public product details.",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:decision:detail",
+      "kind": "decision_record",
+      "claim": "Adopted the complete product detail capability intent.",
+      "path": ".product-continuity/project-state.json",
+      "locator": "reviews[id=review:confirm-capability]",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:decision:task-a",
+      "kind": "decision_record",
+      "claim": "Adopted the guest public-detail task intent.",
+      "path": ".product-continuity/project-state.json",
+      "locator": "reviews[id=review:confirm-task]",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:decision:note",
+      "kind": "decision_record",
+      "claim": "Adopted the complete note-limit intent.",
+      "path": ".product-continuity/project-state.json",
+      "locator": "reviews[id=review:confirm-note]",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:decision:note-stop",
+      "kind": "decision_record",
+      "claim": "Stopped the complete note-limit intent.",
+      "path": ".product-continuity/project-state.json",
+      "locator": "reviews[id=review:stop-note]",
+      "validation": "not_applicable"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "decision:detail-adopt",
+      "recordVersion": "0.2",
+      "kind": "adopt_intent",
+      "claimIds": [
+        "claim:capability:product-details:v2"
+      ],
+      "intent": {
+        "statement": "Show public product information on a dedicated detail page.",
+        "scope": [
+          "Public storefront",
+          "Product detail route"
+        ],
+        "conditions": [
+          "The product exists and is published"
+        ],
+        "exceptions": [
+          "Products removed after the page was opened"
+        ]
+      },
+      "statement": "Show public product information on a dedicated detail page.",
+      "status": "confirmed",
+      "applicability": "Scope: Public storefront; Product detail route\nConditions: The product exists and is published\nExceptions: Products removed after the page was opened",
+      "createdAt": "2026-11-11T00:03:00.000Z",
+      "confirmedAt": "2026-11-11T00:03:00.000Z",
+      "confirmedBy": "local-user",
+      "reviewId": "review:confirm-capability",
+      "evidenceIds": [
+        "evidence:decision:detail"
+      ]
+    },
+    {
+      "id": "decision:task-a-adopt",
+      "recordVersion": "0.2",
+      "kind": "adopt_intent",
+      "claimIds": [
+        "claim:task:view-public-product:a"
+      ],
+      "intent": {
+        "statement": "A guest can open a public product detail page.",
+        "scope": [
+          "Public storefront",
+          "Guest shopper"
+        ],
+        "conditions": [
+          "The product is published and publicly visible"
+        ],
+        "exceptions": [
+          "Products hidden by the seller"
+        ]
+      },
+      "statement": "A guest can open a public product detail page.",
+      "status": "confirmed",
+      "applicability": "Scope: Public storefront; Guest shopper\nConditions: The product is published and publicly visible\nExceptions: Products hidden by the seller",
+      "createdAt": "2026-11-11T00:05:00.000Z",
+      "confirmedAt": "2026-11-11T00:05:00.000Z",
+      "confirmedBy": "local-user",
+      "reviewId": "review:confirm-task",
+      "evidenceIds": [
+        "evidence:decision:task-a"
+      ]
+    },
+    {
+      "id": "decision:note-adopt",
+      "recordVersion": "0.2",
+      "kind": "adopt_intent",
+      "claimIds": [
+        "claim:commitment:note-limit:v2"
+      ],
+      "intent": {
+        "statement": "New note body text must be non-empty and at most 500 characters.",
+        "scope": [
+          "Note creation form",
+          "Guest and signed-in users"
+        ],
+        "conditions": [
+          "The note is submitted through the normal create form"
+        ],
+        "exceptions": [
+          "Imported notes created by the migration job"
+        ]
+      },
+      "statement": "New note body text must be non-empty and at most 500 characters.",
+      "status": "superseded",
+      "applicability": "Scope: Note creation form; Guest and signed-in users\nConditions: The note is submitted through the normal create form\nExceptions: Imported notes created by the migration job",
+      "createdAt": "2026-11-11T00:07:00.000Z",
+      "confirmedAt": "2026-11-11T00:07:00.000Z",
+      "confirmedBy": "local-user",
+      "reviewId": "review:confirm-note",
+      "evidenceIds": [
+        "evidence:decision:note"
+      ],
+      "supersededByDecisionId": "decision:note-stop",
+      "supersededByReviewId": "review:stop-note"
+    },
+    {
+      "id": "decision:note-stop",
+      "recordVersion": "0.2",
+      "kind": "stop_intent",
+      "claimIds": [
+        "claim:commitment:note-limit:v2"
+      ],
+      "intent": {
+        "statement": "New note body text must be non-empty and at most 500 characters.",
+        "scope": [
+          "Note creation form",
+          "Guest and signed-in users"
+        ],
+        "conditions": [
+          "The note is submitted through the normal create form"
+        ],
+        "exceptions": [
+          "Imported notes created by the migration job"
+        ]
+      },
+      "statement": "New note body text must be non-empty and at most 500 characters.",
+      "status": "confirmed",
+      "applicability": "Scope: Note creation form; Guest and signed-in users\nConditions: The note is submitted through the normal create form\nExceptions: Imported notes created by the migration job",
+      "createdAt": "2026-11-11T00:08:00.000Z",
+      "confirmedAt": "2026-11-11T00:08:00.000Z",
+      "confirmedBy": "local-user",
+      "reviewId": "review:stop-note",
+      "evidenceIds": [
+        "evidence:decision:note-stop"
+      ],
+      "supersedesDecisionIds": [
+        "decision:note-adopt"
+      ]
+    },
+    {
+      "id": "decision:legacy-guest",
+      "recordVersion": "0.1",
+      "statement": "Public product details are viewable without sign-in",
+      "status": "confirmed",
+      "applicability": "Public storefront product detail pages; legacy node-level confirmation",
+      "createdAt": "2026-11-11T00:01:00.000Z",
+      "confirmedAt": "2026-11-11T00:01:00.000Z",
+      "confirmedBy": "local-user",
+      "evidenceIds": [
+        "evidence:legacy-user"
+      ]
+    }
+  ],
+  "intentClaims": [
+    {
+      "id": "claim:goal:easy-shopping:v0",
+      "nodeId": "goal:easy-shopping",
+      "statement": "Make product discovery easy",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "dismissed",
+      "origin": "onboarding",
+      "createdAt": "2026-11-11T00:01:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": []
+    },
+    {
+      "id": "claim:task:view-public-product:v0",
+      "nodeId": "task:view-public-product",
+      "statement": "View a public product",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "superseded",
+      "origin": "onboarding",
+      "createdAt": "2026-11-11T00:01:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": [
+        "claim:task:view-public-product:a",
+        "claim:task:view-public-product:b"
+      ]
+    },
+    {
+      "id": "claim:task:view-public-product:a",
+      "nodeId": "task:view-public-product",
+      "statement": "A guest can open a public product detail page.",
+      "scope": [
+        "Public storefront",
+        "Guest shopper"
+      ],
+      "conditions": [
+        "The product is published and publicly visible"
+      ],
+      "exceptions": [
+        "Products hidden by the seller"
+      ],
+      "status": "confirmed",
+      "origin": "review",
+      "createdAt": "2026-11-11T00:04:00.000Z",
+      "createdByReviewId": "review:split-task",
+      "assessment": {
+        "disposition": "single",
+        "contentDigest": "sha256:35b6cfdf8ccbfcc1d277caacf93f3fcf6995e92e991fc36725a21d73765f1139",
+        "reviewedLegacyContext": false,
+        "reviewId": "review:split-task"
+      },
+      "governingDecisionId": "decision:task-a-adopt",
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:task:view-public-product:v0"
+      ],
+      "supersededByClaimIds": []
+    },
+    {
+      "id": "claim:task:view-public-product:b",
+      "nodeId": "task:view-public-product",
+      "statement": "Loading a public product detail shows the product name, price and availability.",
+      "scope": [
+        "Public storefront"
+      ],
+      "conditions": [],
+      "exceptions": [],
+      "status": "candidate",
+      "origin": "review",
+      "createdAt": "2026-11-11T00:04:00.000Z",
+      "createdByReviewId": "review:split-task",
+      "assessment": {
+        "disposition": "single",
+        "contentDigest": "sha256:9dff7736d89aaa4b1b5825e0feaa2dde817dbfb3a65aea3c852796be8950d121",
+        "reviewedLegacyContext": false,
+        "reviewId": "review:split-task"
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:task:view-public-product:v0"
+      ],
+      "supersededByClaimIds": []
+    },
+    {
+      "id": "claim:capability:product-details:v1",
+      "nodeId": "capability:product-details",
+      "statement": "Product detail page",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "superseded",
+      "origin": "onboarding",
+      "createdAt": "2026-11-11T00:01:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": [
+        "claim:capability:product-details:v2"
+      ]
+    },
+    {
+      "id": "claim:capability:product-details:v2",
+      "nodeId": "capability:product-details",
+      "statement": "Show public product information on a dedicated detail page.",
+      "scope": [
+        "Public storefront",
+        "Product detail route"
+      ],
+      "conditions": [
+        "The product exists and is published"
+      ],
+      "exceptions": [
+        "Products removed after the page was opened"
+      ],
+      "status": "confirmed",
+      "origin": "review",
+      "createdAt": "2026-11-11T00:02:00.000Z",
+      "createdByReviewId": "review:prepare-capability",
+      "assessment": {
+        "disposition": "single",
+        "contentDigest": "sha256:9ed519e239b9f2a7860bd1a0e68197f2173dbe397e74c8bed556ab36eb101923",
+        "reviewedLegacyContext": false,
+        "reviewId": "review:prepare-capability"
+      },
+      "governingDecisionId": "decision:detail-adopt",
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:capability:product-details:v1"
+      ],
+      "supersededByClaimIds": []
+    },
+    {
+      "id": "claim:commitment:guest-access",
+      "nodeId": "commitment:guest-access",
+      "statement": "Public details are viewable without sign-in",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "candidate",
+      "origin": "migration",
+      "createdAt": "2026-11-11T00:00:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": []
+    },
+    {
+      "id": "claim:commitment:note-limit:v1",
+      "nodeId": "commitment:note-limit",
+      "statement": "New note text is limited",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "superseded",
+      "origin": "onboarding",
+      "createdAt": "2026-11-11T00:01:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": [
+        "claim:commitment:note-limit:v2"
+      ]
+    },
+    {
+      "id": "claim:commitment:note-limit:v2",
+      "nodeId": "commitment:note-limit",
+      "statement": "New note body text must be non-empty and at most 500 characters.",
+      "scope": [
+        "Note creation form",
+        "Guest and signed-in users"
+      ],
+      "conditions": [
+        "The note is submitted through the normal create form"
+      ],
+      "exceptions": [
+        "Imported notes created by the migration job"
+      ],
+      "status": "retired",
+      "origin": "review",
+      "createdAt": "2026-11-11T00:06:00.000Z",
+      "createdByReviewId": "review:prepare-note",
+      "assessment": {
+        "disposition": "single",
+        "contentDigest": "sha256:2a0158259a4b36ed1b284a33534bfdf8f97f7167979069c16619ac601cae8298",
+        "reviewedLegacyContext": false,
+        "reviewId": "review:prepare-note"
+      },
+      "governingDecisionId": "decision:note-adopt",
+      "retiredByDecisionId": "decision:note-stop",
+      "supersedesClaimIds": [
+        "claim:commitment:note-limit:v1"
+      ],
+      "supersededByClaimIds": []
+    }
+  ],
+  "proposals": [
+    {
+      "id": "proposal:detail-edit",
+      "type": "edit",
+      "status": "open",
+      "targetClaimId": "claim:capability:product-details:v2",
+      "targetClaimDigest": "sha256:ae555aedbee45306d72a0eada5c3b030ebc8b2e743bb3aa4a3f3eaf93b9d53d7",
+      "targetDecisionId": "decision:detail-adopt",
+      "replacement": {
+        "statement": "Show public product information on a dedicated detail page, with availability by region.",
+        "scope": [
+          "Public storefront",
+          "Product detail route",
+          "Regional availability"
+        ],
+        "conditions": [
+          "The product exists and is published",
+          "A regional availability record exists"
+        ],
+        "exceptions": [
+          "Products removed after the page was opened"
+        ]
+      },
+      "rationale": "Clarify the regional availability behavior shown on the page.",
+      "createdAt": "2026-11-11T00:10:00.000Z",
+      "createdBy": "local-user",
+      "createdByReviewId": "review:propose-capability"
+    }
+  ],
+  "reviews": [
+    {
+      "id": "review:prepare-capability",
+      "createdAt": "2026-11-11T00:02:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "edit_candidate",
+        "payload": {
+          "content": {
+            "statement": "Show public product information on a dedicated detail page.",
+            "scope": [
+              "Public storefront",
+              "Product detail route"
+            ],
+            "conditions": [
+              "The product exists and is published"
+            ],
+            "exceptions": [
+              "Products removed after the page was opened"
+            ]
+          },
+          "assessment": {
+            "disposition": "single",
+            "reviewedLegacyContext": false
+          },
+          "note": "Prepared as one decidable intent."
+        },
+        "targetClaimId": "claim:capability:product-details:v2"
+      },
+      "observedStateVersion": 2,
+      "observedDigest": "sha256:4c6de9fecb64c1d8274c6d89f2d5d1604bcb667ca9cbfb0c5473740d64aa48cd",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000002",
+      "payloadDigest": "sha256:2ffdfd6b52b7fe064b6b472fda710c4720adf70b639362ed4dd63f11d56bfed2",
+      "createdClaimIds": [
+        "claim:capability:product-details:v2"
+      ],
+      "affectedClaimIds": [
+        "claim:capability:product-details:v1"
+      ],
+      "resultingStateVersion": 3
+    },
+    {
+      "id": "review:confirm-capability",
+      "createdAt": "2026-11-11T00:03:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "confirm_candidate",
+        "payload": {
+          "previewDigest": "sha256:23e2c18ef2863c3b36c201b3a413ba0a05f5b050e26d972e98992b703df35108",
+          "confirmationAttested": true
+        },
+        "targetClaimId": "claim:capability:product-details:v2"
+      },
+      "observedStateVersion": 3,
+      "observedDigest": "sha256:fa6d5c4fbc17cb575ec69414a663b7b0ec112d947d1920cf797e3ca096b2dd6d",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000003",
+      "payloadDigest": "sha256:e46d2725b5d3ee2fd8e4c08130b4c95fe85b7d0fd2a235563942f788d8ac8a73",
+      "createdClaimIds": [],
+      "affectedClaimIds": [
+        "claim:capability:product-details:v2"
+      ],
+      "resultingDecisionId": "decision:detail-adopt",
+      "resultingStateVersion": 4
+    },
+    {
+      "id": "review:split-task",
+      "createdAt": "2026-11-11T00:04:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "split_candidate",
+        "payload": {
+          "items": [
+            {
+              "content": {
+                "statement": "A guest can open a public product detail page.",
+                "scope": [
+                  "Public storefront",
+                  "Guest shopper"
+                ],
+                "conditions": [
+                  "The product is published and publicly visible"
+                ],
+                "exceptions": [
+                  "Products hidden by the seller"
+                ]
+              },
+              "assessment": {
+                "disposition": "single",
+                "reviewedLegacyContext": false
+              }
+            },
+            {
+              "content": {
+                "statement": "Loading a public product detail shows the product name, price and availability.",
+                "scope": [
+                  "Public storefront"
+                ],
+                "conditions": [],
+                "exceptions": []
+              },
+              "assessment": {
+                "disposition": "single",
+                "reviewedLegacyContext": false
+              }
+            }
+          ],
+          "coverageAttested": true,
+          "previewDigest": "sha256:b25fb4d61f24f1133de066476a99914facec63ff11921a414523903e14f34134"
+        },
+        "targetClaimId": "claim:task:view-public-product:v0"
+      },
+      "observedStateVersion": 4,
+      "observedDigest": "sha256:df8244489c9af4c62b010d5a5228d9eef3308d6a336c475230ea7391ef599758",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000004",
+      "payloadDigest": "sha256:453aa25cf3133e04ec5d337992382ff43b3f79edc6aac8948edac3d71bc26c8e",
+      "createdClaimIds": [
+        "claim:task:view-public-product:a",
+        "claim:task:view-public-product:b"
+      ],
+      "affectedClaimIds": [
+        "claim:task:view-public-product:v0"
+      ],
+      "resultingStateVersion": 5
+    },
+    {
+      "id": "review:confirm-task",
+      "createdAt": "2026-11-11T00:05:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "confirm_candidate",
+        "payload": {
+          "previewDigest": "sha256:b53318403b23c30298eb8bc5138b5d39db948655d4c89fdc9f8b2a7dbcc98e0f",
+          "confirmationAttested": true
+        },
+        "targetClaimId": "claim:task:view-public-product:a"
+      },
+      "observedStateVersion": 5,
+      "observedDigest": "sha256:ae310af5c5ce9a4f2d5d4f59f763a5d027f30783336cd2a7817c06e9409bd5b9",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000005",
+      "payloadDigest": "sha256:9a5df39fbb07cd2462ccc2138ec09a1f021dc16163e7de585bb87ec7f1058702",
+      "createdClaimIds": [],
+      "affectedClaimIds": [
+        "claim:task:view-public-product:a"
+      ],
+      "resultingDecisionId": "decision:task-a-adopt",
+      "resultingStateVersion": 6
+    },
+    {
+      "id": "review:prepare-note",
+      "createdAt": "2026-11-11T00:06:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "edit_candidate",
+        "payload": {
+          "content": {
+            "statement": "New note body text must be non-empty and at most 500 characters.",
+            "scope": [
+              "Note creation form",
+              "Guest and signed-in users"
+            ],
+            "conditions": [
+              "The note is submitted through the normal create form"
+            ],
+            "exceptions": [
+              "Imported notes created by the migration job"
+            ]
+          },
+          "assessment": {
+            "disposition": "single",
+            "reviewedLegacyContext": false
+          },
+          "note": "Prepared the full note limit."
+        },
+        "targetClaimId": "claim:commitment:note-limit:v1"
+      },
+      "observedStateVersion": 6,
+      "observedDigest": "sha256:744f30e116c3c4ef9e0ba80e9118985903202ec96442748bde4d342c464d707c",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000006",
+      "payloadDigest": "sha256:27aadd09761599c921957b25da163f3cb75d3e753a57dc4d1382e5e53f338e5e",
+      "createdClaimIds": [
+        "claim:commitment:note-limit:v2"
+      ],
+      "affectedClaimIds": [
+        "claim:commitment:note-limit:v1"
+      ],
+      "resultingStateVersion": 7
+    },
+    {
+      "id": "review:confirm-note",
+      "createdAt": "2026-11-11T00:07:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "confirm_candidate",
+        "payload": {
+          "previewDigest": "sha256:b13c2b22fe0c9487ddc7c7864537bd7a20fe612891910a04b1eccb2c322336eb",
+          "confirmationAttested": true
+        },
+        "targetClaimId": "claim:commitment:note-limit:v2"
+      },
+      "observedStateVersion": 7,
+      "observedDigest": "sha256:68c5090325f7e297cb8705e87d592089601d0d8cf15a95b4b35a5ff2e5f0b9d7",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000007",
+      "payloadDigest": "sha256:7fb2184bdba02041a5f0012ec6b81698852d101931f896e12a3dd70c2fbb5be2",
+      "createdClaimIds": [],
+      "affectedClaimIds": [
+        "claim:commitment:note-limit:v2"
+      ],
+      "resultingDecisionId": "decision:note-adopt",
+      "resultingStateVersion": 8
+    },
+    {
+      "id": "review:stop-note",
+      "createdAt": "2026-11-11T00:08:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "retire_claim",
+        "payload": {
+          "reason": "The limit moved into a separate policy.",
+          "previewDigest": "sha256:9740afbec6e572beb65f6fa514214e06ce518b51320c1dc8a03f855897fe29e3",
+          "stopAttested": true
+        },
+        "targetClaimId": "claim:commitment:note-limit:v2"
+      },
+      "observedStateVersion": 8,
+      "observedDigest": "sha256:98e7091eab196d0c4d0c5d41853a6ad74076033048d56a846bd8e0ae4ad1aab6",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000008",
+      "payloadDigest": "sha256:f74569be29466b997998496c6824e77b5efd1809b48a97eadebd57498709818a",
+      "createdClaimIds": [],
+      "affectedClaimIds": [
+        "claim:commitment:note-limit:v2"
+      ],
+      "resultingDecisionId": "decision:note-stop",
+      "resultingStateVersion": 9
+    },
+    {
+      "id": "review:discard-goal",
+      "createdAt": "2026-11-11T00:09:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "discard_candidate",
+        "payload": {
+          "reason": "Duplicate of the task-level intent.",
+          "previewDigest": "sha256:bcb27f8ccde247c4ea62192dfabf7a4fe7683d745f685b8369c3e8afe941d55c"
+        },
+        "targetClaimId": "claim:goal:easy-shopping:v0"
+      },
+      "observedStateVersion": 9,
+      "observedDigest": "sha256:6e6c08e228e366648404e815636a40db60bc32daca1391e943dee03eab924953",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000009",
+      "payloadDigest": "sha256:7eed6454d2af532b523631c7e4a29d1f7c2a3ac643e5a981dda90d22d0e3331f",
+      "createdClaimIds": [],
+      "affectedClaimIds": [
+        "claim:goal:easy-shopping:v0"
+      ],
+      "resultingStateVersion": 10
+    },
+    {
+      "id": "review:propose-capability",
+      "createdAt": "2026-11-11T00:10:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:example-roadmap",
+        "action": "propose_edit",
+        "payload": {
+          "replacement": {
+            "statement": "Show public product information on a dedicated detail page, with availability by region.",
+            "scope": [
+              "Public storefront",
+              "Product detail route",
+              "Regional availability"
+            ],
+            "conditions": [
+              "The product exists and is published",
+              "A regional availability record exists"
+            ],
+            "exceptions": [
+              "Products removed after the page was opened"
+            ]
+          },
+          "rationale": "Clarify the regional availability behavior shown on the page."
+        },
+        "targetClaimId": "claim:capability:product-details:v2"
+      },
+      "observedStateVersion": 10,
+      "observedDigest": "sha256:1591a0dc1f70f6ff61730324f1d4b6098f77f02cdecc511e8c5f82de94c7bfc9",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000010",
+      "payloadDigest": "sha256:38dbdcac9ad39baa9293607cdee46b66de06f70d71121aa20efef7444375da90",
+      "createdClaimIds": [],
+      "affectedClaimIds": [],
+      "resultingProposalId": "proposal:detail-edit",
+      "resultingStateVersion": 11
+    }
+  ],
+  "checks": [
+    {
+      "id": "check:demo-001",
+      "createdAt": "2026-11-10T00:00:00Z",
+      "baselineId": "baseline:demo-1",
+      "base": {
+        "commit": "demo-revision",
+        "label": "Example base"
+      },
+      "head": {
+        "commit": "demo-revision-2",
+        "label": "Example head"
+      },
+      "taskIntent": {
+        "status": "not_provided"
+      },
+      "scope": {
+        "description": "Illustrative product detail route review",
+        "includedPaths": [
+          "apps/storefront/routes/product-detail.ts"
+        ],
+        "excludedPaths": [],
+        "coverageNote": "Synthetic example only; no source repository was inspected"
+      },
+      "findings": [
+        {
+          "id": "finding:demo-001",
+          "status": "insufficient_evidence",
+          "summary": "The test is defined but no execution result was supplied, so guest access is not behavior-verified.",
+          "affectedNodeIds": [
+            "commitment:guest-access",
+            "verify:guest-test",
+            "task:view-public-product"
+          ],
+          "decisionIds": [
+            "decision:legacy-guest",
+            "decision:task-a-adopt"
+          ],
+          "evidenceIds": [
+            "evidence:test"
+          ],
+          "nextAction": "Run the focused guest-access test against the reviewed revision."
+        }
+      ]
+    }
+  ],
+  "roadmapItems": [
+    {
+      "id": "roadmap:product-details-now",
+      "nodeId": "capability:product-details",
+      "objective": "Keep the saved product-detail planning position visible without redefining the confirmed Feature.",
+      "scope": [
+        "Public storefront",
+        "Product detail route"
+      ],
+      "exclusions": [
+        "Checkout and payment",
+        "Regional availability proposal"
+      ],
+      "horizon": "now",
+      "status": "in_progress",
+      "acceptanceCriteria": [
+        "The planning view can locate the confirmed product-detail Feature",
+        "The item remains a planning projection, not a new confirmation"
+      ],
+      "dependsOn": [],
+      "blockers": [],
+      "closedReason": null
+    },
+    {
+      "id": "roadmap:saved-views-next",
+      "nodeId": "capability:saved-views",
+      "objective": "Plan a read-only way to return to a selected map view.",
+      "scope": [
+        "Local map",
+        "Desktop canvas"
+      ],
+      "exclusions": [
+        "Cloud sync",
+        "Multi-user sharing"
+      ],
+      "horizon": "next",
+      "status": "ready",
+      "acceptanceCriteria": [
+        "A later planning review can restore the selected node and visible scope",
+        "No saved view is treated as a product decision or test result"
+      ],
+      "dependsOn": [
+        "roadmap:product-details-now"
+      ],
+      "blockers": [],
+      "closedReason": null
+    },
+    {
+      "id": "roadmap:planning-digest-later",
+      "nodeId": "capability:planning-digest",
+      "objective": "Explore a compact summary of planning positions for a later planning review.",
+      "scope": [
+        "Saved 0.2 state",
+        "Read-only planning view"
+      ],
+      "exclusions": [
+        "Automatic progress percentages",
+        "Test execution summaries"
+      ],
+      "horizon": "later",
+      "status": "idea",
+      "acceptanceCriteria": [
+        "The summary can be inspected without becoming a product commitment",
+        "Planning status stays separate from implementation and validation"
+      ],
+      "dependsOn": [
+        "roadmap:saved-views-next"
+      ],
+      "blockers": [],
+      "closedReason": null
+    },
+    {
+      "id": "roadmap:offline-import-unplanned",
+      "nodeId": "capability:offline-import",
+      "objective": "Consider importing an explicitly authorized offline map plan.",
+      "scope": [
+        "Local files only"
+      ],
+      "exclusions": [
+        "Online shared writing",
+        "Arbitrary project paths"
+      ],
+      "horizon": "unplanned",
+      "status": "paused",
+      "acceptanceCriteria": [
+        "Any future import stays behind an explicit offline authorization step",
+        "The item does not grant development permission while unplanned"
+      ],
+      "dependsOn": [
+        "roadmap:planning-digest-later"
+      ],
+      "blockers": [
+        "Planning paused in this fixture; no schedule or approval is implied."
+      ],
+      "closedReason": null
+    },
+    {
+      "id": "roadmap:audit-export-closed",
+      "nodeId": "capability:audit-export",
+      "objective": "Demonstrate a closed planning item without claiming delivery.",
+      "scope": [
+        "Planning record display"
+      ],
+      "exclusions": [
+        "Runtime audit service",
+        "Compliance certification"
+      ],
+      "horizon": "later",
+      "status": "closed",
+      "acceptanceCriteria": [
+        "The example distinguishes a closed planning item from a passed test"
+      ],
+      "dependsOn": [],
+      "blockers": [],
+      "closedReason": "Planning closed for this example fixture; no implementation, execution or verification result is implied."
+    }
+  ],
+  "migration": {
+    "fromSchemaVersion": "0.1",
+    "fromStateVersion": 1,
+    "sourceDigest": "sha256:529d72193c0c423c41ef0568819bd669570f024c91605a3d80e338ee9e00e6fe",
+    "migratedAt": "2026-11-11T00:00:00.000Z",
+    "toolVersion": "0.2.0",
+    "warnings": [
+      "1 legacy confirmed decision remains unaligned to the new claims; no claim was auto-confirmed.",
+      "Conditions were kept as node-level unclassified material, not copied into intent claims.",
+      "No review, proposal, confirmed claim, decision, test execution or runtime observation was added by migration."
+    ]
+  }
+}

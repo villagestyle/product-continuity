@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "0.2",
+  "stateVersion": 1,
+  "project": {
+    "id": "project:empty",
+    "name": "Empty 0.2",
+    "roots": [
+      "."
+    ],
+    "scopeDescription": "Empty synthetic state"
+  },
+  "activeBaselineId": "baseline:empty",
+  "baselines": [
+    {
+      "id": "baseline:empty",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Empty"
+      },
+      "scope": {
+        "description": "Empty",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "No source inspected"
+      },
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "nodes": [],
+  "edges": [],
+  "evidence": [],
+  "decisions": [],
+  "intentClaims": [],
+  "proposals": [],
+  "reviews": [],
+  "checks": []
+}

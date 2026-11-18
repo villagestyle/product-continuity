@@ -1,0 +1,221 @@
+{
+  "schemaVersion": "0.2",
+  "stateVersion": 2,
+  "project": {
+    "id": "project:shared-legacy",
+    "name": "Shared Legacy Decision",
+    "roots": [
+      "."
+    ],
+    "scopeDescription": "Synthetic 0.1 fixture"
+  },
+  "activeBaselineId": "baseline:shared",
+  "baselines": [
+    {
+      "id": "baseline:shared",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Synthetic 0.1 fixture"
+      },
+      "scope": {
+        "description": "Synthetic",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "No source inspected"
+      },
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "goal:shared",
+      "kind": "product_goal",
+      "label": "Shared approved goal",
+      "description": "Goal bound to the shared legacy decision.",
+      "status": "candidate",
+      "conditions": [
+        "Legacy condition A"
+      ],
+      "evidenceIds": [
+        "evidence:shared-1"
+      ],
+      "legacy": {
+        "schemaVersion": "0.1",
+        "snapshot": {
+          "id": "goal:shared",
+          "kind": "product_goal",
+          "label": "Shared approved goal",
+          "description": "Goal bound to the shared legacy decision.",
+          "status": "confirmed",
+          "conditions": [
+            "Legacy condition A"
+          ],
+          "decisionId": "decision:shared",
+          "evidenceIds": [
+            "evidence:shared-1"
+          ]
+        }
+      }
+    },
+    {
+      "id": "commitment:shared",
+      "kind": "behavior_commitment",
+      "label": "Shared approved commitment",
+      "description": "Commitment bound to the shared legacy decision.",
+      "status": "candidate",
+      "conditions": [
+        "Legacy condition B"
+      ],
+      "evidenceIds": [
+        "evidence:shared-2"
+      ],
+      "legacy": {
+        "schemaVersion": "0.1",
+        "snapshot": {
+          "id": "commitment:shared",
+          "kind": "behavior_commitment",
+          "label": "Shared approved commitment",
+          "description": "Commitment bound to the shared legacy decision.",
+          "status": "confirmed",
+          "conditions": [
+            "Legacy condition B"
+          ],
+          "decisionId": "decision:shared",
+          "evidenceIds": [
+            "evidence:shared-2"
+          ]
+        }
+      }
+    },
+    {
+      "id": "goal:retired",
+      "kind": "product_goal",
+      "label": "Retired goal",
+      "description": "Already retired in 0.1.",
+      "status": "retired",
+      "conditions": [
+        "Retired condition"
+      ],
+      "evidenceIds": [
+        "evidence:shared-1"
+      ],
+      "legacy": {
+        "schemaVersion": "0.1",
+        "snapshot": {
+          "id": "goal:retired",
+          "kind": "product_goal",
+          "label": "Retired goal",
+          "description": "Already retired in 0.1.",
+          "status": "retired",
+          "conditions": [
+            "Retired condition"
+          ],
+          "evidenceIds": [
+            "evidence:shared-1"
+          ]
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:shared",
+      "from": "goal:shared",
+      "kind": "contains",
+      "to": "commitment:shared"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "evidence:shared-1",
+      "kind": "user_statement",
+      "claim": "Synthetic user statement for the goal.",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:shared-2",
+      "kind": "user_statement",
+      "claim": "Synthetic user statement for the commitment.",
+      "validation": "not_applicable"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "decision:shared",
+      "statement": "Approve both shared intentions",
+      "status": "confirmed",
+      "applicability": "Both legacy nodes",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "confirmedAt": "2026-01-01T00:00:00Z",
+      "confirmedBy": "local-user",
+      "evidenceIds": [
+        "evidence:shared-1",
+        "evidence:shared-2"
+      ],
+      "recordVersion": "0.1"
+    }
+  ],
+  "intentClaims": [
+    {
+      "id": "claim:goal:shared",
+      "nodeId": "goal:shared",
+      "statement": "Shared approved goal",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "candidate",
+      "origin": "migration",
+      "createdAt": "2026-11-11T01:00:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": []
+    },
+    {
+      "id": "claim:commitment:shared",
+      "nodeId": "commitment:shared",
+      "statement": "Shared approved commitment",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "candidate",
+      "origin": "migration",
+      "createdAt": "2026-11-11T01:00:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": []
+    }
+  ],
+  "proposals": [],
+  "reviews": [],
+  "checks": [],
+  "migration": {
+    "fromSchemaVersion": "0.1",
+    "fromStateVersion": 1,
+    "sourceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "migratedAt": "2026-11-11T01:00:00.000Z",
+    "toolVersion": "0.2.0",
+    "warnings": [
+      "1 legacy confirmed decision(s) remain unaligned to the new claims; no claim was auto-confirmed.",
+      "1 already-retired intent node(s) were preserved as history and received no active claim.",
+      "3 node(s) keep conditions as unclassified/historical material; conditions were not copied into intent claims.",
+      "2 unreviewed candidate claim(s) were created; none are confirmed.",
+      "No review, proposal, confirmed claim, decision, test execution or runtime observation was added."
+    ]
+  }
+}

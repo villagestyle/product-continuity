@@ -1,0 +1,523 @@
+{
+  "schemaVersion": "0.2",
+  "stateVersion": 7,
+  "project": {
+    "id": "project:three-gen",
+    "name": "Three Generation Chain",
+    "roots": [
+      "."
+    ],
+    "scopeDescription": "Synthetic chain fixture"
+  },
+  "activeBaselineId": "baseline:1",
+  "baselines": [
+    {
+      "id": "baseline:1",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Synthetic fixture"
+      },
+      "scope": {
+        "description": "Fixture",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "Synthetic only"
+      },
+      "createdAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "capability:three-gen",
+      "kind": "capability",
+      "label": "Three generation capability",
+      "status": "confirmed",
+      "evidenceIds": []
+    }
+  ],
+  "edges": [],
+  "evidence": [
+    {
+      "id": "evidence:three-gen:1",
+      "kind": "decision_record",
+      "claim": "Confirmed complete intent claim:three-gen:v1: Version one statement",
+      "path": ".product-continuity/project-state.json",
+      "locator": "reviews[id=review:three-gen:2]",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:three-gen:2",
+      "kind": "decision_record",
+      "claim": "Confirmed complete intent claim:three-gen:v2: Version two statement",
+      "path": ".product-continuity/project-state.json",
+      "locator": "reviews[id=review:three-gen:4]",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:three-gen:3",
+      "kind": "decision_record",
+      "claim": "Confirmed complete intent claim:three-gen:v3: Version three statement",
+      "path": ".product-continuity/project-state.json",
+      "locator": "reviews[id=review:three-gen:6]",
+      "validation": "not_applicable"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "decision:three-gen:1",
+      "recordVersion": "0.2",
+      "kind": "adopt_intent",
+      "claimIds": [
+        "claim:three-gen:v1"
+      ],
+      "intent": {
+        "statement": "Version one statement",
+        "scope": [
+          "Scope one"
+        ],
+        "conditions": [
+          "Condition one"
+        ],
+        "exceptions": [
+          "Exception one"
+        ]
+      },
+      "statement": "Version one statement",
+      "status": "superseded",
+      "applicability": "Scope: Scope one\nConditions: Condition one\nExceptions: Exception one",
+      "createdAt": "2026-01-01T00:02:00.000Z",
+      "confirmedAt": "2026-01-01T00:02:00.000Z",
+      "confirmedBy": "local-user",
+      "reviewId": "review:three-gen:2",
+      "evidenceIds": [
+        "evidence:three-gen:1"
+      ],
+      "supersededByDecisionId": "decision:three-gen:2",
+      "supersededByReviewId": "review:three-gen:4"
+    },
+    {
+      "id": "decision:three-gen:2",
+      "recordVersion": "0.2",
+      "kind": "adopt_intent",
+      "claimIds": [
+        "claim:three-gen:v2"
+      ],
+      "intent": {
+        "statement": "Version two statement",
+        "scope": [
+          "Scope two"
+        ],
+        "conditions": [
+          "Condition two"
+        ],
+        "exceptions": []
+      },
+      "statement": "Version two statement",
+      "status": "superseded",
+      "applicability": "Scope: Scope two\nConditions: Condition two\nExceptions: none recorded",
+      "createdAt": "2026-01-01T00:04:00.000Z",
+      "confirmedAt": "2026-01-01T00:04:00.000Z",
+      "confirmedBy": "local-user",
+      "reviewId": "review:three-gen:4",
+      "evidenceIds": [
+        "evidence:three-gen:2"
+      ],
+      "supersedesDecisionIds": [
+        "decision:three-gen:1"
+      ],
+      "supersededByDecisionId": "decision:three-gen:3",
+      "supersededByReviewId": "review:three-gen:6"
+    },
+    {
+      "id": "decision:three-gen:3",
+      "recordVersion": "0.2",
+      "kind": "adopt_intent",
+      "claimIds": [
+        "claim:three-gen:v3"
+      ],
+      "intent": {
+        "statement": "Version three statement",
+        "scope": [
+          "Scope three"
+        ],
+        "conditions": [],
+        "exceptions": [
+          "Exception three"
+        ]
+      },
+      "statement": "Version three statement",
+      "status": "confirmed",
+      "applicability": "Scope: Scope three\nConditions: none recorded\nExceptions: Exception three",
+      "createdAt": "2026-01-01T00:06:00.000Z",
+      "confirmedAt": "2026-01-01T00:06:00.000Z",
+      "confirmedBy": "local-user",
+      "reviewId": "review:three-gen:6",
+      "evidenceIds": [
+        "evidence:three-gen:3"
+      ],
+      "supersedesDecisionIds": [
+        "decision:three-gen:2"
+      ]
+    }
+  ],
+  "intentClaims": [
+    {
+      "id": "claim:three-gen:v0",
+      "nodeId": "capability:three-gen",
+      "statement": "Version zero",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "superseded",
+      "origin": "onboarding",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": [
+        "claim:three-gen:v1"
+      ]
+    },
+    {
+      "id": "claim:three-gen:v1",
+      "nodeId": "capability:three-gen",
+      "statement": "Version one statement",
+      "scope": [
+        "Scope one"
+      ],
+      "conditions": [
+        "Condition one"
+      ],
+      "exceptions": [
+        "Exception one"
+      ],
+      "status": "superseded",
+      "origin": "review",
+      "createdAt": "2026-01-01T00:01:00.000Z",
+      "createdByReviewId": "review:three-gen:1",
+      "assessment": {
+        "disposition": "single",
+        "contentDigest": "sha256:82a541566af452642413969fd062faa028790ab283a6937a6c81900f0afab733",
+        "reviewedLegacyContext": false,
+        "reviewId": "review:three-gen:1"
+      },
+      "governingDecisionId": "decision:three-gen:1",
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:three-gen:v0"
+      ],
+      "supersededByClaimIds": [
+        "claim:three-gen:v2"
+      ]
+    },
+    {
+      "id": "claim:three-gen:v2",
+      "nodeId": "capability:three-gen",
+      "statement": "Version two statement",
+      "scope": [
+        "Scope two"
+      ],
+      "conditions": [
+        "Condition two"
+      ],
+      "exceptions": [],
+      "status": "superseded",
+      "origin": "review",
+      "createdAt": "2026-01-01T00:04:00.000Z",
+      "createdByReviewId": "review:three-gen:4",
+      "assessment": {
+        "disposition": "single",
+        "contentDigest": "sha256:bf7f6d0c75deccc716b41f01e2e33f08126d4c680f0dde7c4f0bc6ead57a626f",
+        "reviewedLegacyContext": false,
+        "reviewId": "review:three-gen:4"
+      },
+      "governingDecisionId": "decision:three-gen:2",
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:three-gen:v1"
+      ],
+      "supersededByClaimIds": [
+        "claim:three-gen:v3"
+      ]
+    },
+    {
+      "id": "claim:three-gen:v3",
+      "nodeId": "capability:three-gen",
+      "statement": "Version three statement",
+      "scope": [
+        "Scope three"
+      ],
+      "conditions": [],
+      "exceptions": [
+        "Exception three"
+      ],
+      "status": "confirmed",
+      "origin": "review",
+      "createdAt": "2026-01-01T00:06:00.000Z",
+      "createdByReviewId": "review:three-gen:6",
+      "assessment": {
+        "disposition": "single",
+        "contentDigest": "sha256:2dfd56784dda1298888c6d42b519d2a613f063a2069d8e7ab503cd17a43fabe5",
+        "reviewedLegacyContext": false,
+        "reviewId": "review:three-gen:6"
+      },
+      "governingDecisionId": "decision:three-gen:3",
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:three-gen:v2"
+      ],
+      "supersededByClaimIds": []
+    }
+  ],
+  "proposals": [
+    {
+      "id": "proposal:three-gen:1",
+      "type": "edit",
+      "status": "accepted",
+      "targetClaimId": "claim:three-gen:v1",
+      "targetClaimDigest": "sha256:bddd8a621ff5a4f3b2aa351d01d8b88dce04aebd48760dcfd5fdad13f90a383d",
+      "targetDecisionId": "decision:three-gen:1",
+      "replacement": {
+        "statement": "Version two statement",
+        "scope": [
+          "Scope two"
+        ],
+        "conditions": [
+          "Condition two"
+        ],
+        "exceptions": []
+      },
+      "rationale": "Second generation",
+      "createdAt": "2026-01-01T00:03:00.000Z",
+      "createdBy": "local-user",
+      "createdByReviewId": "review:three-gen:3",
+      "closedByReviewId": "review:three-gen:4",
+      "resultingClaimId": "claim:three-gen:v2",
+      "resultingDecisionId": "decision:three-gen:2"
+    },
+    {
+      "id": "proposal:three-gen:2",
+      "type": "edit",
+      "status": "accepted",
+      "targetClaimId": "claim:three-gen:v2",
+      "targetClaimDigest": "sha256:0b7e510a716de4a4d5b3aed29c45eca5f8953e0bed8b786fe44cc2095ad01db8",
+      "targetDecisionId": "decision:three-gen:2",
+      "replacement": {
+        "statement": "Version three statement",
+        "scope": [
+          "Scope three"
+        ],
+        "conditions": [],
+        "exceptions": [
+          "Exception three"
+        ]
+      },
+      "rationale": "Third generation",
+      "createdAt": "2026-01-01T00:05:00.000Z",
+      "createdBy": "local-user",
+      "createdByReviewId": "review:three-gen:5",
+      "closedByReviewId": "review:three-gen:6",
+      "resultingClaimId": "claim:three-gen:v3",
+      "resultingDecisionId": "decision:three-gen:3"
+    }
+  ],
+  "reviews": [
+    {
+      "id": "review:three-gen:1",
+      "createdAt": "2026-01-01T00:01:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:three-gen",
+        "action": "edit_candidate",
+        "payload": {
+          "content": {
+            "statement": "Version one statement",
+            "scope": [
+              "Scope one"
+            ],
+            "conditions": [
+              "Condition one"
+            ],
+            "exceptions": [
+              "Exception one"
+            ]
+          },
+          "assessment": {
+            "disposition": "single",
+            "reviewedLegacyContext": false
+          }
+        },
+        "targetClaimId": "claim:three-gen:v0"
+      },
+      "observedStateVersion": 1,
+      "observedDigest": "sha256:dcfa091843994be6cc9d54fcfba49ff32787bffb4cdf36a2e78ed015c6f1354d",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000001",
+      "payloadDigest": "sha256:db9c5285a1e7d1d3106dcca6e670a263756d07a151450e6544d20472e97cfad2",
+      "createdClaimIds": [
+        "claim:three-gen:v1"
+      ],
+      "affectedClaimIds": [
+        "claim:three-gen:v0"
+      ],
+      "resultingStateVersion": 2
+    },
+    {
+      "id": "review:three-gen:2",
+      "createdAt": "2026-01-01T00:02:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:three-gen",
+        "action": "confirm_candidate",
+        "payload": {
+          "previewDigest": "sha256:e5217dc757a7ceb86df306bb0db5c64b8a4ca0c5e5359c75c64252d8ba7160cd",
+          "confirmationAttested": true
+        },
+        "targetClaimId": "claim:three-gen:v1"
+      },
+      "observedStateVersion": 2,
+      "observedDigest": "sha256:0b4c22958d54d4c88a88c57960e090888c499ebc10a2660e3aabe7192800cca4",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000002",
+      "payloadDigest": "sha256:677d4fc327cc13f23d6cef8df50dc08ab582e9b500e8d83ee5c36ad47729b8f8",
+      "createdClaimIds": [],
+      "affectedClaimIds": [
+        "claim:three-gen:v1"
+      ],
+      "resultingStateVersion": 3,
+      "resultingDecisionId": "decision:three-gen:1"
+    },
+    {
+      "id": "review:three-gen:3",
+      "createdAt": "2026-01-01T00:03:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:three-gen",
+        "action": "propose_edit",
+        "payload": {
+          "replacement": {
+            "statement": "Version two statement",
+            "scope": [
+              "Scope two"
+            ],
+            "conditions": [
+              "Condition two"
+            ],
+            "exceptions": []
+          },
+          "rationale": "Second generation"
+        },
+        "targetClaimId": "claim:three-gen:v1"
+      },
+      "observedStateVersion": 3,
+      "observedDigest": "sha256:f17d107a33971430a41b3f679b8ae9cd4c15f5f7d5237f29b3587229277d93ee",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000003",
+      "payloadDigest": "sha256:67e67db751b80c1a1566ea06c224f45994c1a68dcca9829907a22ddc338c7be6",
+      "createdClaimIds": [],
+      "affectedClaimIds": [],
+      "resultingStateVersion": 4,
+      "resultingProposalId": "proposal:three-gen:1"
+    },
+    {
+      "id": "review:three-gen:4",
+      "createdAt": "2026-01-01T00:04:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:three-gen",
+        "action": "accept_proposal",
+        "payload": {
+          "previewDigest": "sha256:72da2fc727040fa7908742792c297f414c57bcf9a5f978fc08f4dd007e0e8368",
+          "confirmationAttested": true,
+          "singleIntentAttested": true,
+          "changeScopeAttested": true
+        },
+        "targetProposalId": "proposal:three-gen:1"
+      },
+      "observedStateVersion": 4,
+      "observedDigest": "sha256:b838c04ed54cd93299d538b039a02053c21181f0e9db85fdc69d67123a19f667",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000004",
+      "payloadDigest": "sha256:e6143d9f82dc6588598d057498dc3e43d8864651ac3108226ed3fd3d38bf3bcc",
+      "createdClaimIds": [
+        "claim:three-gen:v2"
+      ],
+      "affectedClaimIds": [
+        "claim:three-gen:v1"
+      ],
+      "resultingStateVersion": 5,
+      "resultingDecisionId": "decision:three-gen:2",
+      "resultingProposalId": "proposal:three-gen:1"
+    },
+    {
+      "id": "review:three-gen:5",
+      "createdAt": "2026-01-01T00:05:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:three-gen",
+        "action": "propose_edit",
+        "payload": {
+          "replacement": {
+            "statement": "Version three statement",
+            "scope": [
+              "Scope three"
+            ],
+            "conditions": [],
+            "exceptions": [
+              "Exception three"
+            ]
+          },
+          "rationale": "Third generation"
+        },
+        "targetClaimId": "claim:three-gen:v2"
+      },
+      "observedStateVersion": 5,
+      "observedDigest": "sha256:b709c4d703cbf24b74353fc9b0843936cd4d5f8e9e4ec55eaa58c96daf04ab54",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000005",
+      "payloadDigest": "sha256:0b6bd9009a08166195e2b27237dd24f561d55470fc5c983611948888b79c6d93",
+      "createdClaimIds": [],
+      "affectedClaimIds": [],
+      "resultingStateVersion": 6,
+      "resultingProposalId": "proposal:three-gen:2"
+    },
+    {
+      "id": "review:three-gen:6",
+      "createdAt": "2026-01-01T00:06:00.000Z",
+      "actor": "local-user",
+      "source": "local_review_ui",
+      "command": {
+        "projectId": "project:three-gen",
+        "action": "accept_proposal",
+        "payload": {
+          "previewDigest": "sha256:3afb8b0f1ffb5ac5e6ca90ece4407e2431db4037c55560d3bd250d3906d6afea",
+          "confirmationAttested": true,
+          "singleIntentAttested": true,
+          "changeScopeAttested": true
+        },
+        "targetProposalId": "proposal:three-gen:2"
+      },
+      "observedStateVersion": 6,
+      "observedDigest": "sha256:f75d298b678c729f302662c7aa9f3b18ae87d624f77a6be61d389178ec3b87fb",
+      "idempotencyKey": "00000000-0000-4000-8000-000000000006",
+      "payloadDigest": "sha256:6adda78baaf600bf203778d9fac7e8930ed39c2379ccd99633ba6802229fe1a1",
+      "createdClaimIds": [
+        "claim:three-gen:v3"
+      ],
+      "affectedClaimIds": [
+        "claim:three-gen:v2"
+      ],
+      "resultingStateVersion": 7,
+      "resultingDecisionId": "decision:three-gen:3",
+      "resultingProposalId": "proposal:three-gen:2"
+    }
+  ],
+  "checks": []
+}

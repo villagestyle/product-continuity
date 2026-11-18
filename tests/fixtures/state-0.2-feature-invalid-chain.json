@@ -1,0 +1,510 @@
+{
+  "schemaVersion": "0.2",
+  "stateVersion": 4,
+  "project": {
+    "id": "project:feature-resume-synthetic",
+    "name": "Feature resume synthetic fixture",
+    "roots": [
+      "."
+    ],
+    "scopeDescription": "Synthetic contract fixture; it contains no real project facts."
+  },
+  "activeBaselineId": "baseline:synthetic",
+  "baselines": [
+    {
+      "id": "baseline:synthetic",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Synthetic baseline; no source inspected"
+      },
+      "scope": {
+        "description": "Synthetic only",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "No source inspected; this is a contract fixture."
+      },
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "goal:resume",
+      "kind": "product_goal",
+      "label": "Resume saved work",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "capability:progress-resume",
+      "kind": "capability",
+      "label": "Resume progress",
+      "status": "candidate",
+      "description": "Synthetic capability used only for contract tests.",
+      "evidenceIds": []
+    },
+    {
+      "id": "capability:search",
+      "kind": "capability",
+      "label": "Search records",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "impl:checkpoint-cli",
+      "kind": "implementation",
+      "label": "Checkpoint CLI",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "verification:checkpoint-tests",
+      "kind": "verification",
+      "label": "Checkpoint tests",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "unknown:resume-ui",
+      "kind": "unknown",
+      "label": "Resume panel design unknown",
+      "status": "unknown",
+      "evidenceIds": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:goal-capability",
+      "kind": "contains",
+      "from": "goal:resume",
+      "to": "capability:progress-resume",
+      "evidenceIds": []
+    },
+    {
+      "id": "edge:capability-impl",
+      "kind": "implemented_by",
+      "from": "capability:progress-resume",
+      "to": "impl:checkpoint-cli",
+      "evidenceIds": []
+    },
+    {
+      "id": "edge:capability-verification",
+      "kind": "verified_by",
+      "from": "capability:progress-resume",
+      "to": "verification:checkpoint-tests",
+      "evidenceIds": []
+    },
+    {
+      "id": "edge:unknown-capability",
+      "kind": "derived_from",
+      "from": "unknown:resume-ui",
+      "to": "capability:progress-resume",
+      "evidenceIds": []
+    }
+  ],
+  "evidence": [
+    {
+      "id": "evidence:checkpoint-tests",
+      "kind": "test_definition",
+      "claim": "Synthetic test definition for the checkpoint contract; not executed.",
+      "validation": "defined_only",
+      "observedAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "decisions": [],
+  "intentClaims": [
+    {
+      "id": "claim:resume:v1",
+      "nodeId": "capability:progress-resume",
+      "statement": "Users can see where a saved feature stopped.",
+      "scope": [
+        "Synthetic contract fixture"
+      ],
+      "conditions": [],
+      "exceptions": [],
+      "status": "candidate",
+      "origin": "onboarding",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": []
+    }
+  ],
+  "proposals": [],
+  "reviews": [],
+  "checks": [],
+  "roadmapItems": [
+    {
+      "id": "roadmap:progress-resume",
+      "nodeId": "capability:progress-resume",
+      "objective": "Plan a synthetic resume panel.",
+      "scope": [
+        "Synthetic only"
+      ],
+      "exclusions": [],
+      "horizon": "next",
+      "status": "in_progress",
+      "acceptanceCriteria": [
+        "Synthetic acceptance criterion; not a test result."
+      ],
+      "dependsOn": [],
+      "blockers": [],
+      "closedReason": null
+    }
+  ],
+  "mapUpdates": [
+    {
+      "id": "map-update:00000000-0000-4000-8000-000000000101",
+      "operationId": "feature-checkpoint-synthetic-1",
+      "projectId": "project:feature-resume-synthetic",
+      "source": "local_feature_checkpoint",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "authorizationRef": "Synthetic fixture authorization; not a product approval.",
+      "summary": "Synthetic checkpoint for contract tests.",
+      "observedStateVersion": 1,
+      "observedDigest": "sha256:6a3324acc119032ef297224a97953cb696b31e8a6c5e5e6b006ed9c401a59760",
+      "resultingStateVersion": 2,
+      "payloadDigest": "sha256:a10c88c07a898538a17d31ddde113f985a72827909aad399b30804cc786e2c8f",
+      "changedNodeIds": [],
+      "addedFeatureCheckpointIds": [
+        "checkpoint:00000000-0000-4000-8000-000000000001"
+      ],
+      "addedEdgeIds": [],
+      "addedEvidenceIds": [],
+      "addedCheckIds": []
+    },
+    {
+      "id": "map-update:00000000-0000-4000-8000-000000000102",
+      "operationId": "feature-checkpoint-synthetic-2",
+      "projectId": "project:feature-resume-synthetic",
+      "source": "local_feature_checkpoint",
+      "createdAt": "2026-01-02T00:00:00.000Z",
+      "authorizationRef": "Synthetic fixture authorization; not a product approval.",
+      "summary": "Second synthetic checkpoint; the chain tail is explicit.",
+      "observedStateVersion": 2,
+      "observedDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "resultingStateVersion": 3,
+      "payloadDigest": "sha256:3d1e1744f6d3e0bddff48508166f608b7c6b7c577a0085b77c132b084a86e506",
+      "changedNodeIds": [],
+      "addedFeatureCheckpointIds": [
+        "checkpoint:00000000-0000-4000-8000-000000000002"
+      ],
+      "addedEdgeIds": [],
+      "addedEvidenceIds": [],
+      "addedCheckIds": []
+    },
+    {
+      "id": "map-update:00000000-0000-4000-8000-000000000103",
+      "operationId": "feature-checkpoint-synthetic-search-1",
+      "projectId": "project:feature-resume-synthetic",
+      "source": "local_feature_checkpoint",
+      "createdAt": "2026-01-03T00:00:00.000Z",
+      "authorizationRef": "Synthetic fixture authorization; not a product approval.",
+      "summary": "Synthetic checkpoint for a second feature.",
+      "observedStateVersion": 3,
+      "observedDigest": "sha256:d6f3c5931ec799d305d15fa6afb268a2c14538ddcf554f889c319f23f31168bf",
+      "resultingStateVersion": 4,
+      "payloadDigest": "sha256:baec5b4324e3e73710f6a6d5887a4b15c40d470c6f530b15bc61635057d3f573",
+      "changedNodeIds": [],
+      "addedFeatureCheckpointIds": [
+        "checkpoint:00000000-0000-4000-8000-000000000003"
+      ],
+      "addedEdgeIds": [],
+      "addedEvidenceIds": [],
+      "addedCheckIds": []
+    }
+  ],
+  "featureCheckpoints": [
+    {
+      "id": "checkpoint:00000000-0000-4000-8000-000000000001",
+      "nodeId": "capability:progress-resume",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "source": "agent_organized",
+      "sourceRefs": [
+        "synthetic plan fixture"
+      ],
+      "supersedes": null,
+      "summary": "Synthetic checkpoint for contract tests.",
+      "workDone": [
+        {
+          "statement": "Synthetic work item; it does not claim any product behavior.",
+          "basisRefs": [
+            {
+              "collection": "node",
+              "id": "impl:checkpoint-cli"
+            }
+          ]
+        }
+      ],
+      "stopPoint": "Synthetic stop point; not an execution position.",
+      "remaining": [
+        {
+          "category": "verification",
+          "responsibility": "agent",
+          "statement": "Synthetic remaining item; no execution happened.",
+          "basisRefs": [
+            {
+              "collection": "evidence",
+              "id": "evidence:checkpoint-tests"
+            }
+          ]
+        }
+      ],
+      "nextActions": [
+        {
+          "statement": "Synthetic next action; it grants no authorization.",
+          "actor": "agent",
+          "category": "verify",
+          "preconditions": [
+            "Synthetic precondition"
+          ],
+          "authorizationRequired": [
+            "test_execution"
+          ]
+        }
+      ],
+      "nextActionsStatus": "recorded",
+      "basis": {
+        "observedStateVersion": 1,
+        "observedDigest": "sha256:6a3324acc119032ef297224a97953cb696b31e8a6c5e5e6b006ed9c401a59760",
+        "contextFingerprint": "sha256:c58cca26ac6cb34c8d3bb1ff3aab1b958d60a66e8f9b0eb090e9d51468e4b60e",
+        "contextFingerprintVersion": 1,
+        "contextIds": {
+          "nodeIds": [
+            "capability:progress-resume",
+            "goal:resume",
+            "impl:checkpoint-cli",
+            "unknown:resume-ui",
+            "verification:checkpoint-tests"
+          ],
+          "edgeIds": [
+            "edge:capability-impl",
+            "edge:capability-verification",
+            "edge:goal-capability",
+            "edge:unknown-capability"
+          ],
+          "evidenceIds": [],
+          "claimIds": [
+            "claim:resume:v1"
+          ],
+          "decisionIds": [],
+          "proposalIds": [],
+          "reviewIds": [],
+          "roadmapItemIds": [
+            "roadmap:progress-resume"
+          ]
+        },
+        "refs": [
+          {
+            "collection": "intentClaim",
+            "id": "claim:resume:v1"
+          },
+          {
+            "collection": "roadmapItem",
+            "id": "roadmap:progress-resume"
+          }
+        ],
+        "sourceSnapshots": [
+          {
+            "path": "scripts/feature-progress.mjs",
+            "digest": null,
+            "revision": "synthetic-revision",
+            "observedAt": "2026-01-01T00:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkpoint:00000000-0000-4000-8000-000000000002",
+      "nodeId": "capability:progress-resume",
+      "createdAt": "2026-01-02T00:00:00.000Z",
+      "source": "agent_organized",
+      "sourceRefs": [
+        "synthetic plan fixture"
+      ],
+      "supersedes": null,
+      "summary": "Second synthetic checkpoint; the chain tail is explicit.",
+      "workDone": [
+        {
+          "statement": "Synthetic work item; it does not claim any product behavior.",
+          "basisRefs": [
+            {
+              "collection": "node",
+              "id": "impl:checkpoint-cli"
+            }
+          ]
+        }
+      ],
+      "stopPoint": "Synthetic stop point; not an execution position.",
+      "remaining": [
+        {
+          "category": "verification",
+          "responsibility": "agent",
+          "statement": "Synthetic remaining item; no execution happened.",
+          "basisRefs": [
+            {
+              "collection": "evidence",
+              "id": "evidence:checkpoint-tests"
+            }
+          ]
+        }
+      ],
+      "nextActions": [
+        {
+          "statement": "Synthetic next action; it grants no authorization.",
+          "actor": "agent",
+          "category": "verify",
+          "preconditions": [
+            "Synthetic precondition"
+          ],
+          "authorizationRequired": [
+            "test_execution"
+          ]
+        }
+      ],
+      "nextActionsStatus": "recorded",
+      "basis": {
+        "observedStateVersion": 2,
+        "observedDigest": "sha256:b8f2222832e9c68214f146544c38b963e6038e667fd4731387b0a7dea45e27b1",
+        "contextFingerprint": "sha256:c58cca26ac6cb34c8d3bb1ff3aab1b958d60a66e8f9b0eb090e9d51468e4b60e",
+        "contextFingerprintVersion": 1,
+        "contextIds": {
+          "nodeIds": [
+            "capability:progress-resume",
+            "goal:resume",
+            "impl:checkpoint-cli",
+            "unknown:resume-ui",
+            "verification:checkpoint-tests"
+          ],
+          "edgeIds": [
+            "edge:capability-impl",
+            "edge:capability-verification",
+            "edge:goal-capability",
+            "edge:unknown-capability"
+          ],
+          "evidenceIds": [],
+          "claimIds": [
+            "claim:resume:v1"
+          ],
+          "decisionIds": [],
+          "proposalIds": [],
+          "reviewIds": [],
+          "roadmapItemIds": [
+            "roadmap:progress-resume"
+          ]
+        },
+        "refs": [
+          {
+            "collection": "intentClaim",
+            "id": "claim:resume:v1"
+          },
+          {
+            "collection": "roadmapItem",
+            "id": "roadmap:progress-resume"
+          },
+          {
+            "collection": "featureCheckpoint",
+            "id": "checkpoint:00000000-0000-4000-8000-000000000003"
+          }
+        ],
+        "sourceSnapshots": [
+          {
+            "path": "scripts/feature-progress.mjs",
+            "digest": null,
+            "revision": "synthetic-revision",
+            "observedAt": "2026-01-01T00:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkpoint:00000000-0000-4000-8000-000000000003",
+      "nodeId": "capability:search",
+      "createdAt": "2026-01-03T00:00:00.000Z",
+      "source": "agent_organized",
+      "sourceRefs": [
+        "synthetic plan fixture"
+      ],
+      "supersedes": null,
+      "summary": "Synthetic checkpoint for a second feature.",
+      "workDone": [
+        {
+          "statement": "Synthetic work item; it does not claim any product behavior.",
+          "basisRefs": [
+            {
+              "collection": "node",
+              "id": "impl:checkpoint-cli"
+            }
+          ]
+        }
+      ],
+      "stopPoint": "Synthetic stop point; not an execution position.",
+      "remaining": [
+        {
+          "category": "verification",
+          "responsibility": "agent",
+          "statement": "Synthetic remaining item; no execution happened.",
+          "basisRefs": [
+            {
+              "collection": "evidence",
+              "id": "evidence:checkpoint-tests"
+            }
+          ]
+        }
+      ],
+      "nextActions": [
+        {
+          "statement": "Synthetic next action; it grants no authorization.",
+          "actor": "agent",
+          "category": "verify",
+          "preconditions": [
+            "Synthetic precondition"
+          ],
+          "authorizationRequired": [
+            "test_execution"
+          ]
+        }
+      ],
+      "nextActionsStatus": "recorded",
+      "basis": {
+        "observedStateVersion": 3,
+        "observedDigest": "sha256:d6f3c5931ec799d305d15fa6afb268a2c14538ddcf554f889c319f23f31168bf",
+        "contextFingerprint": "sha256:0324c28b1b72d7476fe25eee418afbfed30b4bf7355eee7ef06bfc15d70d5d2a",
+        "contextFingerprintVersion": 1,
+        "contextIds": {
+          "nodeIds": [
+            "capability:search"
+          ],
+          "edgeIds": [],
+          "evidenceIds": [],
+          "claimIds": [],
+          "decisionIds": [],
+          "proposalIds": [],
+          "reviewIds": [],
+          "roadmapItemIds": []
+        },
+        "refs": [
+          {
+            "collection": "node",
+            "id": "capability:search"
+          }
+        ],
+        "sourceSnapshots": [
+          {
+            "path": "scripts/feature-progress.mjs",
+            "digest": null,
+            "revision": "synthetic-revision",
+            "observedAt": "2026-01-01T00:00:00Z"
+          }
+        ]
+      }
+    }
+  ]
+}

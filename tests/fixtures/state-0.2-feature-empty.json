@@ -1,0 +1,164 @@
+{
+  "schemaVersion": "0.2",
+  "stateVersion": 1,
+  "project": {
+    "id": "project:feature-resume-synthetic",
+    "name": "Feature resume synthetic fixture",
+    "roots": [
+      "."
+    ],
+    "scopeDescription": "Synthetic contract fixture; it contains no real project facts."
+  },
+  "activeBaselineId": "baseline:synthetic",
+  "baselines": [
+    {
+      "id": "baseline:synthetic",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Synthetic baseline; no source inspected"
+      },
+      "scope": {
+        "description": "Synthetic only",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "No source inspected; this is a contract fixture."
+      },
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "goal:resume",
+      "kind": "product_goal",
+      "label": "Resume saved work",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "capability:progress-resume",
+      "kind": "capability",
+      "label": "Resume progress",
+      "status": "candidate",
+      "description": "Synthetic capability used only for contract tests.",
+      "evidenceIds": []
+    },
+    {
+      "id": "capability:search",
+      "kind": "capability",
+      "label": "Search records",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "impl:checkpoint-cli",
+      "kind": "implementation",
+      "label": "Checkpoint CLI",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "verification:checkpoint-tests",
+      "kind": "verification",
+      "label": "Checkpoint tests",
+      "status": "candidate",
+      "evidenceIds": []
+    },
+    {
+      "id": "unknown:resume-ui",
+      "kind": "unknown",
+      "label": "Resume panel design unknown",
+      "status": "unknown",
+      "evidenceIds": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:goal-capability",
+      "kind": "contains",
+      "from": "goal:resume",
+      "to": "capability:progress-resume",
+      "evidenceIds": []
+    },
+    {
+      "id": "edge:capability-impl",
+      "kind": "implemented_by",
+      "from": "capability:progress-resume",
+      "to": "impl:checkpoint-cli",
+      "evidenceIds": []
+    },
+    {
+      "id": "edge:capability-verification",
+      "kind": "verified_by",
+      "from": "capability:progress-resume",
+      "to": "verification:checkpoint-tests",
+      "evidenceIds": []
+    },
+    {
+      "id": "edge:unknown-capability",
+      "kind": "derived_from",
+      "from": "unknown:resume-ui",
+      "to": "capability:progress-resume",
+      "evidenceIds": []
+    }
+  ],
+  "evidence": [
+    {
+      "id": "evidence:checkpoint-tests",
+      "kind": "test_definition",
+      "claim": "Synthetic test definition for the checkpoint contract; not executed.",
+      "validation": "defined_only",
+      "observedAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "decisions": [],
+  "intentClaims": [
+    {
+      "id": "claim:resume:v1",
+      "nodeId": "capability:progress-resume",
+      "statement": "Users can see where a saved feature stopped.",
+      "scope": [
+        "Synthetic contract fixture"
+      ],
+      "conditions": [],
+      "exceptions": [],
+      "status": "candidate",
+      "origin": "onboarding",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [],
+      "supersededByClaimIds": []
+    }
+  ],
+  "proposals": [],
+  "reviews": [],
+  "checks": [],
+  "roadmapItems": [
+    {
+      "id": "roadmap:progress-resume",
+      "nodeId": "capability:progress-resume",
+      "objective": "Plan a synthetic resume panel.",
+      "scope": [
+        "Synthetic only"
+      ],
+      "exclusions": [],
+      "horizon": "next",
+      "status": "in_progress",
+      "acceptanceCriteria": [
+        "Synthetic acceptance criterion; not a test result."
+      ],
+      "dependsOn": [],
+      "blockers": [],
+      "closedReason": null
+    }
+  ],
+  "mapUpdates": [],
+  "featureCheckpoints": []
+}

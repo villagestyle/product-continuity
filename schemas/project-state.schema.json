@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:product-continuity:project-state",
+  "title": "Product Continuity Project State (version dispatcher)",
+  "description": "Version dispatcher. Schema 0.1 is frozen; 0.2 adds intent claims, proposals, reviews, and explicit decision record versions. Unknown versions are rejected, not coerced.",
+  "oneOf": [
+    { "$ref": "urn:product-continuity:project-state:0.1" },
+    { "$ref": "urn:product-continuity:project-state:0.2" }
+  ]
+}

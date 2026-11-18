@@ -1,0 +1,518 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:product-continuity:review-command",
+  "title": "Product Continuity Review Command",
+  "description": "Strict discriminated union for the nine local review actions and the read-only preview branch. Requests are rejected for unknown fields; confirmation requests cannot carry intent content, new IDs, actor, time or file paths.",
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "uuid": { "type": "string", "format": "uuid" },
+    "stateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "text": { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" },
+    "textItem": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S" },
+    "intentContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "scope", "conditions", "exceptions"],
+      "properties": {
+        "statement": { "$ref": "#/$defs/text" },
+        "scope": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        },
+        "exceptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        }
+      }
+    },
+    "confirmedIntentContent": {
+      "allOf": [
+        { "$ref": "#/$defs/intentContent" },
+        { "properties": { "scope": { "minItems": 1 } } }
+      ]
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "reviewedLegacyContext"],
+      "properties": {
+        "disposition": { "enum": ["unreviewed", "single", "needs_split"] },
+        "reviewedLegacyContext": { "type": "boolean" }
+      }
+    },
+    "editPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content", "assessment"],
+      "properties": {
+        "content": { "$ref": "#/$defs/intentContent" },
+        "assessment": { "$ref": "#/$defs/assessment" },
+        "note": { "$ref": "#/$defs/text" }
+      }
+    },
+    "splitItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content", "assessment"],
+      "properties": {
+        "content": { "$ref": "#/$defs/intentContent" },
+        "assessment": { "$ref": "#/$defs/assessment" }
+      }
+    },
+    "splitItems": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/splitItem" },
+      "minItems": 2,
+      "maxItems": 5
+    },
+    "splitPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items", "coverageAttested", "previewDigest"],
+      "properties": {
+        "items": { "$ref": "#/$defs/splitItems" },
+        "coverageAttested": { "const": true },
+        "previewDigest": { "$ref": "#/$defs/sha256" },
+        "note": { "$ref": "#/$defs/text" }
+      }
+    },
+    "discardPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "previewDigest"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/text" },
+        "previewDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "legacyResolutionPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decisionId", "decisionDigest"],
+      "properties": {
+        "decisionId": { "$ref": "#/$defs/nonEmpty" },
+        "decisionDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "legacyResolutionSubmit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decisionId", "decisionDigest", "fullRestatementAttested"],
+      "properties": {
+        "decisionId": { "$ref": "#/$defs/nonEmpty" },
+        "decisionDigest": { "$ref": "#/$defs/sha256" },
+        "fullRestatementAttested": { "const": true }
+      }
+    },
+    "confirmPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previewDigest", "confirmationAttested"],
+      "properties": {
+        "previewDigest": { "$ref": "#/$defs/sha256" },
+        "confirmationAttested": { "const": true },
+        "legacyResolution": { "$ref": "#/$defs/legacyResolutionSubmit" }
+      }
+    },
+    "proposePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replacement", "rationale"],
+      "properties": {
+        "replacement": { "$ref": "#/$defs/confirmedIntentContent" },
+        "rationale": { "$ref": "#/$defs/text" }
+      }
+    },
+    "acceptPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "previewDigest",
+        "confirmationAttested",
+        "singleIntentAttested",
+        "changeScopeAttested"
+      ],
+      "properties": {
+        "previewDigest": { "$ref": "#/$defs/sha256" },
+        "confirmationAttested": { "const": true },
+        "singleIntentAttested": { "const": true },
+        "changeScopeAttested": { "const": true }
+      }
+    },
+    "rejectPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "retirePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "previewDigest", "stopAttested"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/text" },
+        "previewDigest": { "$ref": "#/$defs/sha256" },
+        "stopAttested": { "const": true }
+      }
+    },
+    "deferPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "enum": ["needs_split", "needs_evidence", "needs_decision", "other"] },
+        "note": { "$ref": "#/$defs/text" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "reason": { "const": "other" } }, "required": ["reason"] },
+          "then": { "required": ["note"] }
+        }
+      ]
+    },
+    "editPreviewPayload": { "$ref": "#/$defs/editPayload" },
+    "splitPreviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": { "$ref": "#/$defs/splitItems" },
+        "note": { "$ref": "#/$defs/text" }
+      }
+    },
+    "discardPreviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "confirmPreviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "legacyResolution": { "$ref": "#/$defs/legacyResolutionPreview" }
+      }
+    },
+    "proposePreviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replacement", "rationale"],
+      "properties": {
+        "replacement": { "$ref": "#/$defs/confirmedIntentContent" },
+        "rationale": { "$ref": "#/$defs/text" }
+      }
+    },
+    "acceptPreviewPayload": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "rejectPreviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "retirePreviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "deferPreviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "enum": ["needs_split", "needs_evidence", "needs_decision", "other"] },
+        "note": { "$ref": "#/$defs/text" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "reason": { "const": "other" } }, "required": ["reason"] },
+          "then": { "required": ["note"] }
+        }
+      ]
+    },
+    "reviewRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "edit_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/editPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "split_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/splitPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "discard_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/discardPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "confirm_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/confirmPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "propose_edit" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/proposePayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetProposalId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "accept_proposal" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/acceptPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetProposalId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "reject_proposal" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/rejectPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "retire_claim" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/retirePayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "payload", "expectedStateVersion", "expectedDigest", "idempotencyKey"],
+          "oneOf": [
+            { "required": ["targetClaimId"] },
+            { "required": ["targetProposalId"] }
+          ],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "defer" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/deferPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" },
+            "idempotencyKey": { "$ref": "#/$defs/uuid" }
+          }
+        }
+      ]
+    },
+    "previewRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "edit_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/editPreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "split_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/splitPreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "discard_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/discardPreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "confirm_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/confirmPreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "propose_edit" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/proposePreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetProposalId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "accept_proposal" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/acceptPreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetProposalId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "reject_proposal" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/rejectPreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload", "expectedStateVersion", "expectedDigest"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "retire_claim" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/retirePreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "payload", "expectedStateVersion", "expectedDigest"],
+          "oneOf": [
+            { "required": ["targetClaimId"] },
+            { "required": ["targetProposalId"] }
+          ],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "defer" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "#/$defs/deferPreviewPayload" },
+            "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+            "expectedDigest": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/reviewRequest" },
+    { "$ref": "#/$defs/previewRequest" }
+  ]
+}

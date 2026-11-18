@@ -1,0 +1,971 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:product-continuity:project-state:0.2",
+  "title": "Product Continuity Project State 0.2",
+  "description": "Strict 0.2 record contract. Intent claims carry their own confirmation and history; nodes no longer keep decisionId. Legacy 0.1 nodes and decisions are retained explicitly, not reinterpreted as current claim confirmation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "stateVersion",
+    "project",
+    "activeBaselineId",
+    "baselines",
+    "nodes",
+    "edges",
+    "evidence",
+    "decisions",
+    "intentClaims",
+    "proposals",
+    "reviews",
+    "checks"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "0.2" },
+    "stateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "project": { "$ref": "urn:product-continuity:project-state:0.1#/$defs/project" },
+    "activeBaselineId": { "$ref": "urn:product-continuity:project-state:0.1#/$defs/nonEmpty" },
+    "baselines": {
+      "type": "array",
+      "items": { "$ref": "urn:product-continuity:project-state:0.1#/$defs/baseline" },
+      "minItems": 1
+    },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "urn:product-continuity:project-state:0.1#/$defs/edge" } },
+    "evidence": { "type": "array", "items": { "$ref": "urn:product-continuity:project-state:0.1#/$defs/evidence" } },
+    "decisions": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
+    "intentClaims": { "type": "array", "items": { "$ref": "#/$defs/intentClaim" } },
+    "proposals": { "type": "array", "items": { "$ref": "#/$defs/proposal" } },
+    "reviews": { "type": "array", "items": { "$ref": "#/$defs/review" } },
+    "checks": { "type": "array", "items": { "$ref": "urn:product-continuity:project-state:0.1#/$defs/check" } },
+    "roadmapItems": { "type": "array", "items": { "$ref": "#/$defs/roadmapItem" }, "maxItems": 500 },
+    "featureCheckpoints": { "type": "array", "items": { "$ref": "#/$defs/featureCheckpoint" }, "maxItems": 5000 },
+    "conversationCaptures": { "type": "array", "items": { "$ref": "#/$defs/conversationCapture" }, "maxItems": 5000 },
+    "mapUpdates": { "type": "array", "items": { "$ref": "#/$defs/mapUpdate" } },
+    "migration": { "$ref": "#/$defs/migration" }
+  },
+  "$defs": {
+    "conversationSource": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sessionId", "messageId", "role", "quote", "messageDigest"],
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/nonEmpty" },
+        "messageId": { "$ref": "#/$defs/nonEmpty" },
+        "role": { "enum": ["user", "assistant"] },
+        "quote": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" },
+        "messageDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "conversationItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "basis", "nodeId", "statement", "source", "evidenceId", "claimId", "conflictsWithClaimIds"],
+      "properties": {
+        "kind": { "enum": ["candidate", "note"] },
+        "basis": { "enum": ["user_statement", "assistant_suggestion", "assistant_report"] },
+        "nodeId": { "$ref": "#/$defs/nonEmpty" },
+        "statement": { "type": "string", "minLength": 1, "maxLength": 4000, "pattern": "\\S" },
+        "source": { "$ref": "#/$defs/conversationSource" },
+        "evidenceId": { "$ref": "#/$defs/nonEmpty" },
+        "claimId": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/nonEmpty" }] },
+        "intent": { "$ref": "#/$defs/intentContent" },
+        "newNode": {
+          "type": "object", "additionalProperties": false, "required": ["kind", "label"],
+          "properties": {
+            "kind": { "enum": ["product_goal", "user_group", "user_task", "capability", "behavior_commitment", "business_object"] },
+            "label": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" }
+          }
+        },
+        "conflictsWithClaimIds": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmpty" } }
+      },
+      "allOf": [{
+        "if": { "properties": { "kind": { "const": "candidate" } }, "required": ["kind"] },
+        "then": { "required": ["intent"], "properties": { "claimId": { "$ref": "#/$defs/nonEmpty" } } },
+        "else": { "properties": { "claimId": { "type": "null" }, "intent": false, "newNode": false } }
+      }]
+    },
+    "conversationCapture": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operationId", "projectId", "source", "sessionId", "authorizationId", "createdAt", "observedStateVersion", "observedDigest", "resultingStateVersion", "payloadDigest", "items"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "operationId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+        "projectId": { "$ref": "#/$defs/nonEmpty" },
+        "source": { "const": "opencode_conversation" },
+        "sessionId": { "$ref": "#/$defs/nonEmpty" },
+        "authorizationId": { "$ref": "#/$defs/nonEmpty" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "observedStateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740990 },
+        "observedDigest": { "$ref": "#/$defs/sha256" },
+        "resultingStateVersion": { "type": "integer", "minimum": 2, "maximum": 9007199254740991 },
+        "payloadDigest": { "$ref": "#/$defs/sha256" },
+        "items": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/$defs/conversationItem" } }
+      }
+    },
+    "mapUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operationId", "projectId", "source", "createdAt", "authorizationRef", "summary", "observedStateVersion", "observedDigest", "resultingStateVersion", "payloadDigest", "changedNodeIds", "addedEdgeIds", "addedEvidenceIds", "addedCheckIds"],
+      "allOf": [
+        {
+          "if": { "properties": { "source": { "const": "local_roadmap_planning" } }, "required": ["source"] },
+          "then": {
+            "required": ["changedRoadmapItemIds"],
+            "properties": {
+              "addedEdgeIds": { "maxItems": 0 },
+              "addedEvidenceIds": { "maxItems": 0 },
+              "addedCheckIds": { "maxItems": 0 },
+              "addedFeatureCheckpointIds": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "source": { "const": "local_map_maintenance" } }, "required": ["source"] },
+          "then": {
+            "properties": {
+              "changedRoadmapItemIds": false,
+              "addedFeatureCheckpointIds": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "source": { "const": "local_feature_checkpoint" } }, "required": ["source"] },
+          "then": {
+            "required": ["addedFeatureCheckpointIds"],
+            "properties": {
+              "changedNodeIds": { "maxItems": 0 },
+              "changedRoadmapItemIds": false,
+              "addedEdgeIds": { "maxItems": 0 },
+              "addedEvidenceIds": { "maxItems": 0 },
+              "addedCheckIds": { "maxItems": 0 },
+              "addedFeatureCheckpointIds": { "minItems": 1, "maxItems": 1 }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "operationId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+        "projectId": { "$ref": "#/$defs/nonEmpty" },
+        "source": { "enum": ["local_map_maintenance", "local_roadmap_planning", "local_feature_checkpoint"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "authorizationRef": { "$ref": "#/$defs/text" },
+        "summary": { "$ref": "#/$defs/text" },
+        "observedStateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740990 },
+        "observedDigest": { "$ref": "#/$defs/sha256" },
+        "resultingStateVersion": { "type": "integer", "minimum": 2, "maximum": 9007199254740991 },
+        "payloadDigest": { "$ref": "#/$defs/sha256" },
+        "changedNodeIds": { "$ref": "#/$defs/idList" },
+        "changedRoadmapItemIds": { "$ref": "#/$defs/idList" },
+        "addedFeatureCheckpointIds": { "$ref": "#/$defs/checkpointIdList" },
+        "addedEdgeIds": { "$ref": "#/$defs/idList" },
+        "addedEvidenceIds": { "$ref": "#/$defs/idList" },
+        "addedCheckIds": { "$ref": "#/$defs/idList" }
+      }
+    },
+    "featureCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "nodeId", "createdAt", "source", "sourceRefs", "supersedes", "summary", "workDone", "stopPoint", "remaining", "nextActions", "nextActionsStatus", "basis"],
+      "allOf": [
+        {
+          "if": { "properties": { "nextActionsStatus": { "const": "recorded" } }, "required": ["nextActionsStatus"] },
+          "then": { "properties": { "nextActions": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "nextActionsStatus": { "enum": ["none", "not_prepared"] } }, "required": ["nextActionsStatus"] },
+          "then": { "properties": { "nextActions": { "maxItems": 0 } } }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/checkpointId" },
+        "nodeId": { "$ref": "#/$defs/checkpointId" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "source": { "enum": ["agent_organized", "user_note"] },
+        "sourceRefs": { "type": "array", "items": { "$ref": "#/$defs/sourceRefText" }, "maxItems": 10, "uniqueItems": true },
+        "supersedes": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/checkpointId" }] },
+        "summary": { "$ref": "#/$defs/checkpointText" },
+        "workDone": { "type": "array", "items": { "$ref": "#/$defs/checkpointWorkItem" }, "maxItems": 50 },
+        "stopPoint": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/checkpointText" }] },
+        "remaining": { "type": "array", "items": { "$ref": "#/$defs/checkpointRemainingItem" }, "maxItems": 50 },
+        "nextActions": { "type": "array", "items": { "$ref": "#/$defs/checkpointNextAction" }, "maxItems": 50 },
+        "nextActionsStatus": { "enum": ["recorded", "none", "not_prepared"] },
+        "basis": { "$ref": "#/$defs/checkpointBasis" },
+        "delivery": { "$ref": "#/$defs/checkpointDelivery" }
+      }
+    },
+    "checkpointDelivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary", "basisRefs"],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+          "then": { "properties": { "basisRefs": { "minItems": 1 } } }
+        }
+      ],
+      "properties": {
+        "status": { "enum": ["not_started", "in_development", "awaiting_verification", "awaiting_acceptance", "awaiting_release", "completed", "paused"] },
+        "summary": { "$ref": "#/$defs/checkpointText" },
+        "basisRefs": { "type": "array", "items": { "$ref": "#/$defs/checkpointBasisRef" }, "maxItems": 20, "uniqueItems": true }
+      }
+    },
+    "checkpointWorkItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "basisRefs"],
+      "properties": {
+        "statement": { "$ref": "#/$defs/checkpointText" },
+        "basisRefs": { "type": "array", "items": { "$ref": "#/$defs/checkpointBasisRef" }, "maxItems": 20, "uniqueItems": true }
+      }
+    },
+    "checkpointRemainingItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "responsibility", "statement", "basisRefs"],
+      "properties": {
+        "category": { "enum": ["implementation", "verification", "manual_experience", "product_decision", "record_maintenance", "release", "other"] },
+        "responsibility": { "enum": ["agent", "user", "device_operator", "unknown"] },
+        "statement": { "$ref": "#/$defs/checkpointText" },
+        "basisRefs": { "type": "array", "items": { "$ref": "#/$defs/checkpointBasisRef" }, "maxItems": 20, "uniqueItems": true }
+      }
+    },
+    "checkpointNextAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "actor", "category", "preconditions", "authorizationRequired"],
+      "properties": {
+        "statement": { "$ref": "#/$defs/checkpointText" },
+        "actor": { "enum": ["agent", "user", "device_operator", "unknown"] },
+        "category": { "enum": ["implement", "verify", "inspect", "review", "decide", "record", "operate", "other"] },
+        "preconditions": { "type": "array", "items": { "$ref": "#/$defs/preconditionText" }, "maxItems": 10, "uniqueItems": true },
+        "authorizationRequired": {
+          "type": "array",
+          "items": { "enum": ["none", "source_write", "test_execution", "state_write", "service_restart", "distribution"] },
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "authorizationRequired": { "contains": { "const": "none" } } }, "required": ["authorizationRequired"] },
+          "then": { "properties": { "authorizationRequired": { "maxItems": 1 } } }
+        }
+      ]
+    },
+    "checkpointBasisRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection", "id"],
+      "properties": {
+        "collection": { "enum": ["node", "edge", "evidence", "check", "intentClaim", "decision", "proposal", "review", "roadmapItem", "featureCheckpoint"] },
+        "id": { "$ref": "#/$defs/checkpointId" }
+      }
+    },
+    "checkpointBasis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observedStateVersion", "observedDigest", "contextFingerprint", "contextFingerprintVersion", "contextIds", "refs", "sourceSnapshots"],
+      "properties": {
+        "observedStateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740990 },
+        "observedDigest": { "$ref": "#/$defs/sha256" },
+        "contextFingerprint": { "$ref": "#/$defs/sha256" },
+        "contextFingerprintVersion": { "const": 1 },
+        "contextIds": { "$ref": "#/$defs/checkpointContextIds" },
+        "refs": { "type": "array", "items": { "$ref": "#/$defs/checkpointBasisRef" }, "maxItems": 50, "uniqueItems": true },
+        "sourceSnapshots": { "type": "array", "items": { "$ref": "#/$defs/checkpointSourceSnapshot" }, "maxItems": 20, "uniqueItems": true }
+      }
+    },
+    "checkpointContextIds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeIds", "edgeIds", "evidenceIds", "claimIds", "decisionIds", "proposalIds", "reviewIds", "roadmapItemIds"],
+      "properties": {
+        "nodeIds": { "$ref": "#/$defs/checkpointIdList" },
+        "edgeIds": { "$ref": "#/$defs/checkpointIdList" },
+        "evidenceIds": { "$ref": "#/$defs/checkpointIdList" },
+        "claimIds": { "$ref": "#/$defs/checkpointIdList" },
+        "decisionIds": { "$ref": "#/$defs/checkpointIdList" },
+        "proposalIds": { "$ref": "#/$defs/checkpointIdList" },
+        "reviewIds": { "$ref": "#/$defs/checkpointIdList" },
+        "roadmapItemIds": { "$ref": "#/$defs/checkpointIdList" }
+      }
+    },
+    "checkpointSourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest", "revision", "observedAt"],
+      "anyOf": [
+        { "required": ["digest"], "properties": { "digest": { "$ref": "#/$defs/sha256" } } },
+        { "required": ["revision"], "properties": { "revision": { "$ref": "#/$defs/sourceRevision" } } }
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?![A-Za-z]:)\\S(?:.*\\S)?$" },
+        "digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] },
+        "revision": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sourceRevision" }] },
+        "observedAt": { "anyOf": [{ "type": "null" }, { "type": "string", "format": "date-time" }] }
+      }
+    },
+    "checkpointId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+    "checkpointIdList": { "type": "array", "items": { "$ref": "#/$defs/checkpointId" }, "maxItems": 200, "uniqueItems": true },
+    "checkpointText": { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" },
+    "preconditionText": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S" },
+    "sourceRefText": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" },
+    "sourceRevision": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+    "roadmapItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "nodeId", "objective", "scope", "exclusions", "horizon", "status", "acceptanceCriteria", "dependsOn", "blockers", "closedReason"],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "closed" } }, "required": ["status"] },
+          "then": { "properties": { "closedReason": { "$ref": "#/$defs/text" } } }
+        },
+        {
+          "if": {
+            "properties": { "status": { "enum": ["idea", "ready", "in_progress", "paused"] } },
+            "required": ["status"]
+          },
+          "then": { "properties": { "closedReason": { "type": "null" } } }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/roadmapId" },
+        "nodeId": { "$ref": "#/$defs/roadmapId" },
+        "objective": { "$ref": "#/$defs/text" },
+        "scope": { "type": "array", "items": { "$ref": "#/$defs/textItem" }, "maxItems": 20 },
+        "exclusions": { "type": "array", "items": { "$ref": "#/$defs/textItem" }, "maxItems": 20 },
+        "horizon": { "enum": ["unplanned", "now", "next", "later"] },
+        "status": { "enum": ["idea", "ready", "in_progress", "paused", "closed"] },
+        "acceptanceCriteria": { "type": "array", "items": { "$ref": "#/$defs/textItem" }, "maxItems": 30 },
+        "dependsOn": { "type": "array", "items": { "$ref": "#/$defs/roadmapId" }, "maxItems": 50, "uniqueItems": true },
+        "blockers": { "type": "array", "items": { "$ref": "#/$defs/textItem" }, "maxItems": 20 },
+        "closedReason": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/text" }]
+        }
+      }
+    },
+    "roadmapId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "\\S"
+    },
+    "idList": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" }, "uniqueItems": true },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "textItem": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "\\S"
+    },
+    "intentContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "scope", "conditions", "exceptions"],
+      "properties": {
+        "statement": { "$ref": "#/$defs/text" },
+        "scope": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        },
+        "exceptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        }
+      }
+    },
+    "confirmedIntentContent": {
+      "allOf": [
+        { "$ref": "#/$defs/intentContent" },
+        {
+          "properties": {
+            "scope": { "minItems": 1 }
+          }
+        }
+      ]
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "contentDigest", "reviewedLegacyContext", "reviewId"],
+      "properties": {
+        "disposition": { "enum": ["unreviewed", "single", "needs_split"] },
+        "contentDigest": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        },
+        "reviewedLegacyContext": { "type": "boolean" },
+        "reviewId": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/nonEmpty" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "disposition": { "const": "unreviewed" } }, "required": ["disposition"] },
+          "then": {
+            "properties": {
+              "contentDigest": { "type": "null" },
+              "reviewId": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "disposition": { "enum": ["single", "needs_split"] } },
+            "required": ["disposition"]
+          },
+          "then": {
+            "required": ["contentDigest", "reviewId"],
+            "properties": {
+              "contentDigest": { "$ref": "#/$defs/sha256" },
+              "reviewId": { "$ref": "#/$defs/nonEmpty" }
+            }
+          }
+        }
+      ]
+    },
+    "legacyNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "snapshot"],
+      "properties": {
+        "schemaVersion": { "const": "0.1" },
+        "snapshot": { "$ref": "urn:product-continuity:project-state:0.1#/$defs/node" }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "status", "evidenceIds"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "product_goal",
+                  "user_group",
+                  "user_task",
+                  "capability",
+                  "behavior_commitment",
+                  "business_object"
+                ]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "status": { "enum": ["candidate", "confirmed", "retired"] }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "enum": ["implementation", "verification", "unknown"] } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "status": { "enum": ["candidate", "observed", "unknown", "retired"] }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "kind": {
+          "enum": [
+            "product_goal",
+            "user_group",
+            "user_task",
+            "capability",
+            "behavior_commitment",
+            "business_object",
+            "implementation",
+            "verification",
+            "unknown"
+          ]
+        },
+        "label": { "$ref": "#/$defs/nonEmpty" },
+        "description": { "type": "string" },
+        "status": { "enum": ["candidate", "confirmed", "observed", "unknown", "retired"] },
+        "conditions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Historical / unclassified material on a 0.2 node. It is not an intent condition."
+        },
+        "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "legacy": { "$ref": "#/$defs/legacyNode" }
+      }
+    },
+    "legacyDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "recordVersion", "statement", "status", "applicability", "createdAt", "evidenceIds"],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] },
+          "then": { "required": ["confirmedAt", "confirmedBy"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "superseded" } }, "required": ["status"] },
+          "then": {
+            "required": ["supersededByDecisionId"]
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "recordVersion": { "const": "0.1" },
+        "statement": { "$ref": "#/$defs/nonEmpty" },
+        "status": { "enum": ["proposed", "confirmed", "rejected", "superseded", "withdrawn"] },
+        "applicability": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "confirmedAt": { "type": "string", "format": "date-time" },
+        "confirmedBy": { "type": "string" },
+        "supersedesDecisionIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "supersededByDecisionId": { "type": "string" },
+        "supersededByReviewId": { "type": "string" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "intentDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "recordVersion",
+        "kind",
+        "claimIds",
+        "intent",
+        "statement",
+        "status",
+        "applicability",
+        "createdAt",
+        "confirmedAt",
+        "confirmedBy",
+        "reviewId",
+        "evidenceIds"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "superseded" } }, "required": ["status"] },
+          "then": {
+            "required": ["supersededByDecisionId", "supersededByReviewId"]
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "supersededByDecisionId": false,
+              "supersededByReviewId": false
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "recordVersion": { "const": "0.2" },
+        "kind": { "enum": ["adopt_intent", "stop_intent"] },
+        "claimIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true
+        },
+        "intent": { "$ref": "#/$defs/confirmedIntentContent" },
+        "statement": { "$ref": "#/$defs/text" },
+        "status": { "enum": ["confirmed", "superseded"] },
+        "applicability": { "$ref": "#/$defs/nonEmpty" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "confirmedAt": { "type": "string", "format": "date-time" },
+        "confirmedBy": { "$ref": "#/$defs/nonEmpty" },
+        "reviewId": { "$ref": "#/$defs/nonEmpty" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
+        "supersedesDecisionIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "supersededByDecisionId": { "$ref": "#/$defs/nonEmpty" },
+        "supersededByReviewId": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "decision": {
+      "oneOf": [
+        { "$ref": "#/$defs/legacyDecision" },
+        { "$ref": "#/$defs/intentDecision" }
+      ]
+    },
+    "intentClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "nodeId",
+        "statement",
+        "scope",
+        "conditions",
+        "exceptions",
+        "status",
+        "origin",
+        "createdAt",
+        "createdByReviewId",
+        "assessment",
+        "governingDecisionId",
+        "retiredByDecisionId",
+        "supersedesClaimIds",
+        "supersededByClaimIds"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "enum": ["candidate", "dismissed"] } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "governingDecisionId": { "type": "null" },
+              "retiredByDecisionId": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "governingDecisionId": { "$ref": "#/$defs/nonEmpty" },
+              "retiredByDecisionId": { "type": "null" },
+              "scope": { "minItems": 1 },
+              "assessment": {
+                "properties": { "disposition": { "const": "single" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "retired" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "governingDecisionId": { "$ref": "#/$defs/nonEmpty" },
+              "retiredByDecisionId": { "$ref": "#/$defs/nonEmpty" },
+              "scope": { "minItems": 1 },
+              "assessment": {
+                "properties": { "disposition": { "const": "single" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "superseded" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "retiredByDecisionId": { "type": "null" },
+              "supersededByClaimIds": { "minItems": 1 }
+            }
+          },
+          "else": {
+            "properties": {
+              "supersededByClaimIds": { "maxItems": 0 }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "nodeId": { "$ref": "#/$defs/nonEmpty" },
+        "statement": { "$ref": "#/$defs/text" },
+        "scope": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        },
+        "exceptions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textItem" },
+          "maxItems": 20
+        },
+        "status": { "enum": ["candidate", "confirmed", "superseded", "retired", "dismissed"] },
+        "origin": { "enum": ["onboarding", "migration", "review", "conversation"] },
+        "conversationSource": {
+          "type": "object", "additionalProperties": false, "required": ["captureId", "itemIndex"],
+          "properties": {
+            "captureId": { "$ref": "#/$defs/nonEmpty" },
+            "itemIndex": { "type": "integer", "minimum": 0, "maximum": 19 }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdByReviewId": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/nonEmpty" }]
+        },
+        "assessment": { "$ref": "#/$defs/assessment" },
+        "governingDecisionId": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/nonEmpty" }]
+        },
+        "retiredByDecisionId": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/nonEmpty" }]
+        },
+        "supersedesClaimIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "maxItems": 1,
+          "uniqueItems": true
+        },
+        "supersededByClaimIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "status",
+        "targetClaimId",
+        "targetClaimDigest",
+        "targetDecisionId",
+        "replacement",
+        "rationale",
+        "createdAt",
+        "createdBy",
+        "createdByReviewId"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "open" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "closedByReviewId": false,
+              "closeReason": false,
+              "resultingClaimId": false,
+              "resultingDecisionId": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "accepted" } }, "required": ["status"] },
+          "then": {
+            "required": ["closedByReviewId", "resultingClaimId", "resultingDecisionId"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "enum": ["rejected", "expired"] } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["closedByReviewId", "closeReason"],
+            "properties": {
+              "resultingClaimId": false,
+              "resultingDecisionId": false
+            }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "type": { "const": "edit" },
+        "status": { "enum": ["open", "accepted", "rejected", "expired"] },
+        "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+        "targetClaimDigest": { "$ref": "#/$defs/sha256" },
+        "targetDecisionId": { "$ref": "#/$defs/nonEmpty" },
+        "replacement": { "$ref": "#/$defs/confirmedIntentContent" },
+        "rationale": { "$ref": "#/$defs/text" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "$ref": "#/$defs/nonEmpty" },
+        "createdByReviewId": { "$ref": "#/$defs/nonEmpty" },
+        "closedByReviewId": { "$ref": "#/$defs/nonEmpty" },
+        "closeReason": { "$ref": "#/$defs/text" },
+        "resultingClaimId": { "$ref": "#/$defs/nonEmpty" },
+        "resultingDecisionId": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "reviewCommand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "edit_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/editPayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "split_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/splitPayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "discard_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/discardPayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "confirm_candidate" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/confirmPayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "propose_edit" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/proposePayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetProposalId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "accept_proposal" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/acceptPayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetProposalId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "reject_proposal" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/rejectPayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "targetClaimId", "payload"],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "retire_claim" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/retirePayload" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["projectId", "action", "payload"],
+          "oneOf": [
+            { "required": ["targetClaimId"] },
+            { "required": ["targetProposalId"] }
+          ],
+          "properties": {
+            "projectId": { "$ref": "#/$defs/nonEmpty" },
+            "action": { "const": "defer" },
+            "targetClaimId": { "$ref": "#/$defs/nonEmpty" },
+            "targetProposalId": { "$ref": "#/$defs/nonEmpty" },
+            "payload": { "$ref": "urn:product-continuity:review-command#/$defs/deferPayload" }
+          }
+        }
+      ]
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "createdAt",
+        "actor",
+        "source",
+        "command",
+        "observedStateVersion",
+        "observedDigest",
+        "idempotencyKey",
+        "payloadDigest",
+        "createdClaimIds",
+        "affectedClaimIds",
+        "resultingStateVersion"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "actor": { "$ref": "#/$defs/nonEmpty" },
+        "source": { "const": "local_review_ui" },
+        "command": { "$ref": "#/$defs/reviewCommand" },
+        "observedStateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "observedDigest": { "$ref": "#/$defs/sha256" },
+        "idempotencyKey": { "type": "string", "format": "uuid" },
+        "payloadDigest": { "$ref": "#/$defs/sha256" },
+        "createdClaimIds": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" }, "uniqueItems": true },
+        "affectedClaimIds": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" }, "uniqueItems": true },
+        "resultingDecisionId": { "$ref": "#/$defs/nonEmpty" },
+        "resultingProposalId": { "$ref": "#/$defs/nonEmpty" },
+        "resultingStateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fromSchemaVersion",
+        "fromStateVersion",
+        "sourceDigest",
+        "migratedAt",
+        "toolVersion",
+        "warnings"
+      ],
+      "properties": {
+        "fromSchemaVersion": { "const": "0.1" },
+        "fromStateVersion": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "sourceDigest": { "$ref": "#/$defs/sha256" },
+        "migratedAt": { "type": "string", "format": "date-time" },
+        "toolVersion": { "$ref": "#/$defs/nonEmpty" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

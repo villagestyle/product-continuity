@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:product-continuity:project-state:0.1",
+  "title": "Product Continuity Project State",
+  "description": "Portable, provenance-aware product map and change history. Human intent, implementation evidence, and validation are separate records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "stateVersion", "project", "activeBaselineId", "baselines", "nodes", "edges", "evidence", "decisions", "checks"],
+  "properties": {
+    "schemaVersion": { "const": "0.1" },
+    "stateVersion": { "type": "integer", "minimum": 1 },
+    "project": { "$ref": "#/$defs/project" },
+    "activeBaselineId": { "$ref": "#/$defs/nonEmpty" },
+    "baselines": { "type": "array", "items": { "$ref": "#/$defs/baseline" }, "minItems": 1 },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+    "decisions": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
+    "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "roots"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty", "description": "Stable identity; do not derive solely from an absolute path." },
+        "name": { "$ref": "#/$defs/nonEmpty" },
+        "roots": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" }, "uniqueItems": true, "minItems": 1 },
+        "scopeDescription": { "type": "string" }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commit": { "type": "string" },
+        "branch": { "type": "string" },
+        "worktree": { "enum": ["clean", "dirty", "unknown"] },
+        "label": { "type": "string" }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "includedPaths", "excludedPaths", "coverageNote"],
+      "properties": {
+        "description": { "$ref": "#/$defs/nonEmpty" },
+        "includedPaths": { "type": "array", "items": { "type": "string" } },
+        "excludedPaths": { "type": "array", "items": { "type": "string" } },
+        "coverageNote": { "type": "string" }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "scope", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "revision": { "$ref": "#/$defs/revision" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "supersedesBaselineId": { "type": "string" }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "status", "evidenceIds"],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] },
+          "then": {
+            "required": ["decisionId"],
+            "properties": {
+              "kind": { "enum": ["product_goal", "user_group", "user_task", "capability", "behavior_commitment", "business_object"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["implementation", "verification"] } }, "required": ["kind"] },
+          "then": { "properties": { "status": { "enum": ["candidate", "observed", "unknown", "retired"] } } }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "kind": { "enum": ["product_goal", "user_group", "user_task", "capability", "behavior_commitment", "business_object", "implementation", "verification", "unknown"] },
+        "label": { "$ref": "#/$defs/nonEmpty" },
+        "description": { "type": "string" },
+        "status": { "enum": ["candidate", "confirmed", "observed", "unknown", "retired"] },
+        "conditions": { "type": "array", "items": { "type": "string" } },
+        "decisionId": { "type": "string" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "kind", "to"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "from": { "$ref": "#/$defs/nonEmpty" },
+        "kind": { "enum": ["contains", "serves", "enables", "constrains", "implemented_by", "verified_by", "depends_on", "supersedes", "conflicts_with", "derived_from", "part_of"] },
+        "to": { "$ref": "#/$defs/nonEmpty" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "claim", "validation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "kind": { "enum": ["user_statement", "requirement", "decision_record", "product_document", "implementation", "test_definition", "test_execution", "runtime_observation", "git_history", "inference"] },
+        "claim": { "$ref": "#/$defs/nonEmpty" },
+        "revision": { "type": "string" },
+        "path": { "type": "string" },
+        "locator": { "type": "string" },
+        "validation": { "enum": ["not_applicable", "not_run", "defined_only", "passed", "failed", "observed"] },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "excerpt": { "type": "string", "maxLength": 500, "description": "Optional short excerpt; redact secrets and personal/customer data." }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "status", "applicability", "createdAt", "evidenceIds"],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] },
+          "then": { "required": ["confirmedAt", "confirmedBy"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "superseded" } }, "required": ["status"] },
+          "then": {
+            "required": ["supersededByDecisionId"],
+            "properties": { "evidenceIds": { "type": "array", "minItems": 1 } }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "statement": { "$ref": "#/$defs/nonEmpty" },
+        "status": { "enum": ["proposed", "confirmed", "rejected", "superseded", "withdrawn"] },
+        "applicability": { "type": "string", "description": "Products, tasks, actors, conditions, or versions where this decision applies." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "confirmedAt": { "type": "string", "format": "date-time" },
+        "confirmedBy": { "type": "string" },
+        "supersedesDecisionIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "supersededByDecisionId": { "type": "string" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "summary", "evidenceIds"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "status": { "enum": ["no_supported_behavior_change", "consistent_with_confirmed_intent", "potential_mismatch", "proposed_evolution", "existing_discrepancy", "insufficient_evidence"] },
+        "summary": { "$ref": "#/$defs/nonEmpty" },
+        "affectedNodeIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "decisionIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "nextAction": { "type": "string" }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "createdAt", "base", "head", "taskIntent", "scope", "findings"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmpty" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "baselineId": { "type": "string" },
+        "base": { "$ref": "#/$defs/revision" },
+        "head": { "$ref": "#/$defs/revision" },
+        "taskIntent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "enum": ["provided", "not_provided", "reconstructed", "confirmed"] },
+            "statement": { "type": "string" },
+            "source": { "type": "string" }
+          }
+        },
+        "scope": { "$ref": "#/$defs/scope" },
+        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } }
+      }
+    }
+  }
+}

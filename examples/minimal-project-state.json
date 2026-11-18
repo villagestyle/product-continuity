@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "0.1",
+  "stateVersion": 1,
+  "project": {
+    "id": "project:example",
+    "name": "Example Project",
+    "roots": ["."],
+    "scopeDescription": "One product scope in this repository"
+  },
+  "activeBaselineId": "baseline:initial",
+  "baselines": [
+    {
+      "id": "baseline:initial",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Initial onboarding"
+      },
+      "scope": {
+        "description": "Initial bounded inspection",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "Replace with the actual inspected paths and gaps"
+      },
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "nodes": [],
+  "edges": [],
+  "evidence": [],
+  "decisions": [],
+  "checks": []
+}

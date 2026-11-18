@@ -1,0 +1,1858 @@
+#!/usr/bin/env node
+
+/**
+ * The single HTTP entry point for the local intent review service.
+ *
+ * Design boundaries (see docs/review-service-plan.md §9):
+ * - Binds only 127.0.0.1, never 0.0.0.0 or a DNS alias.
+ * - One state file per process, opened through state-store.mjs so the same
+ *   cooperative lock, full validation and staged commit path apply.
+ * - The session cookie is a request-isolation aid for this loopback page. It
+ *   is not authentication, not port isolation and not proof that a human
+ *   confirmed a product intent.
+ * - The HTTP layer never accepts a whole state, a path, a command, a query
+ *   test hook or a client-generated ID. Action semantics and idempotency live
+ *   in review-actions.mjs / state-store.mjs; this file only guards transport,
+ *   validates request shape, serialises actions and renders safe responses.
+ * - A request aborted while waiting in the local queue never starts an action.
+ *   A request aborted after an action has started cannot cancel the store call
+ *   (the store API has no cancellation signal); the response is suppressed and
+ *   the store's own idempotency rules apply. This is an explicit limit, not a
+ *   claim of transactional cancellation.
+ */
+
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import http from 'node:http';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { REVIEW_ACTIONS } from './intent-model.mjs';
+import { renderMap } from './render-map.mjs';
+import { loadConversationAuthorization, verifyConversationSignature } from './conversation-authorization.mjs';
+
+const DEFAULT_PORT = 8768;
+const DEFAULT_MAX_STATE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+const DEFAULT_MAX_QUEUE = 16;
+const DEFAULT_BODY_TIMEOUT_MS = 10_000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_HEADERS = 32;
+const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
+const REVIEW_VIEW_BASENAME = 'product-map.review.html';
+const COOKIE_MAX_LENGTH = 4096;
+const MAX_REQUEST_TARGET_LENGTH = 2048;
+const SUPPORTED_LANGUAGES = new Set(['zh-CN', 'en']);
+const KNOWN_ACTIONS = new Set(REVIEW_ACTIONS);
+
+const JSON_CONTENT_TYPE = /^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/i;
+
+const SENSITIVE_HEADERS = new Set([
+  'host',
+  'origin',
+  'cookie',
+  'content-type',
+  'content-length',
+  'content-encoding',
+  'transfer-encoding',
+  'x-review-action',
+  'x-conversation-signature',
+  'sec-fetch-site',
+]);
+
+const SAFE_MESSAGES = {
+  invalid_path: 'A state file path is required.',
+  dependency_unavailable:
+    'Schema validation dependencies are unavailable; run npm ci in the skill directory.',
+  startup_failed: 'The review service could not start.',
+  port_unavailable: 'The requested loopback port could not be bound.',
+  bad_host: 'Host must be exactly 127.0.0.1 with this service port.',
+  bad_origin: 'Origin or Fetch Metadata does not match this service.',
+  no_session: 'Open the review page to establish a session for this service.',
+  missing_action_header: 'POST actions require X-Review-Action: 1.',
+  method_not_allowed: 'Method not allowed for this route.',
+  not_found: 'No such route.',
+  invalid_request: 'The request did not match the strict review contract.',
+  unknown_action: 'The requested review action is not supported.',
+  invalid_json: 'The request body is not valid JSON.',
+  invalid_utf8: 'The request body is not valid UTF-8.',
+  payload_too_large: 'The request body exceeds the configured limit.',
+  unsupported_media_type: 'Only application/json; charset=utf-8 is accepted.',
+  request_timeout: 'The request body was not received in time.',
+  queue_full: 'The review queue is full; no action was started.',
+  client_aborted: 'The client disconnected before the action started.',
+  stale_state: 'The expected state version or digest is stale.',
+  snapshot_unavailable: 'The exact historical snapshot is missing, outside the read limit or no longer verifiable.',
+  idempotency_conflict: 'This idempotency key was already used with different content.',
+  external_modification: 'The state file changed outside this service; writes are stopped.',
+  lock_lost: 'The state lock is no longer owned by this service; writes are stopped.',
+  migration_required: 'This state is 0.1 and must be migrated before it can be written.',
+  read_only: 'The state store is read-only.',
+  wrong_project: 'The request project does not match the open state.',
+  target_not_found: 'The requested target was not found.',
+  preview_mismatch: 'The preview no longer matches the current state or request.',
+  claim_not_ready: 'The claim is not ready for this action.',
+  invalid_transition: 'The action is not allowed in the current state.',
+  proposal_conflict: 'The target claim already has an open proposal.',
+  proposal_stale: 'The proposal no longer matches its target claim.',
+  legacy_requires_manual_reconciliation:
+    'A shared or composite legacy decision cannot be partially replaced here.',
+  legacy_resolution_required: 'The legacy decision must be explicitly restated first.',
+  legacy_resolution_invalid: 'The legacy decision reference does not match the open state.',
+  state_validation_failed: 'The generated state failed validation; writes are stopped.',
+  prepare_failed: 'The next state could not be prepared; the fact source was not replaced.',
+  backup_failed: 'The versioned backup failed; the fact source was not replaced.',
+  replace_failed_preserved:
+    'Replacement failed and the old state remains at the target path; inspect before retrying.',
+  write_unverified:
+    'The state was replaced but could not be verified; stop and inspect the file and backup.',
+  commit_unknown: 'The replacement result is unknown; stop and inspect the state file.',
+  domain_unavailable: 'Review actions are unavailable.',
+  store_closed: 'The state store is closed.',
+  render_failed: 'The derived review map could not be generated.',
+  view_unreadable: 'The derived view could not be read back.',
+  view_symlink: 'The derived view target is a symbolic link; refusing to replace it.',
+  view_not_file: 'The derived view target is not a regular file.',
+  view_hardlink: 'The derived view target has multiple hard links.',
+  view_too_large: 'The derived view target exceeds the size limit.',
+  view_is_state: 'The derived view target is the fact source; refusing to overwrite it.',
+  view_not_owned: 'The derived view has no ownership marker for this service.',
+  view_owner_mismatch: 'The derived view belongs to another state identity.',
+  view_locked: 'The derived view is locked by another process.',
+  view_lock_failed: 'The derived view lock could not be acquired.',
+  view_lock_lost: 'The derived view lock was lost; the view was not written.',
+  view_target_changed: 'The derived view target changed; refusing to overwrite it.',
+  view_verification_failed: 'The derived view marker does not match this state.',
+  view_readback_mismatch: 'The derived view readback digest does not match.',
+  view_marker_invalid: 'The derived view staging marker is not the expected one.',
+  view_conflict: 'The derived view conflicts with the current state or another owner.',
+  view_unavailable: 'The derived view is unavailable.',
+  render_no_output: 'The renderer produced no view output.',
+  lock_failed: 'The state lock could not be created.',
+  invalid_server_option: 'A trusted service option is invalid.',
+  attestation_required: 'The required confirmation attestation is missing.',
+  invalid_id_factory: 'The server-generated identifier is invalid.',
+  state_not_file: 'The state path is not a regular file.',
+  state_not_found: 'The state file was not found.',
+  state_parent_missing: 'The state parent directory is not accessible.',
+  state_unreadable: 'The state file could not be read.',
+  render_page_failed: 'The review page could not be rendered.',
+  store_unavailable: 'The state store is unavailable.',
+  invalid_state: 'The state file did not pass full validation.',
+  state_unverifiable: 'The state file cannot be verified; writes are stopped.',
+  hardlink_state: 'The state file has multiple hard links; writes are stopped.',
+  state_too_large: 'The state file exceeds the configured size limit.',
+  internal_error: 'The request could not be completed.',
+};
+
+class ServiceError extends Error {
+  constructor(code, status, message, options = {}) {
+    super(message, options.cause ? { cause: options.cause } : undefined);
+    this.name = 'ServiceError';
+    this.code = code;
+    this.status = status;
+    this.commitStatus = options.commitStatus ?? 'not_committed';
+    this.details = options.details;
+    this.closeConnection = options.closeConnection === true;
+    this.noResponse = options.noResponse === true;
+  }
+}
+
+let corePromise;
+
+function isMissingDependency(error) {
+  const text = String(error?.message ?? '');
+  return (
+    error?.code === 'ERR_MODULE_NOT_FOUND' &&
+    /(?:ajv|state-store\.mjs|validate-schema-runner\.mjs)/i.test(text)
+  );
+}
+
+async function loadCore() {
+  if (corePromise) return corePromise;
+  corePromise = (async () => {
+    try {
+      const [storeModule, validatorModule] = await Promise.all([
+        import('./state-store.mjs'),
+        import('./validate-schema-runner.mjs'),
+      ]);
+      // Compile every schema before the store can acquire a lock.
+      validatorModule.getCompiledValidators();
+      return {
+        openStateStore: storeModule.openStateStore,
+        canonicalizeStatePath: storeModule.canonicalizeStatePath,
+        createIoAdapter: storeModule.createIoAdapter,
+        validateReviewRequest: validatorModule.validateReviewRequest,
+        validatePreviewRequest: validatorModule.validatePreviewRequest,
+      };
+    } catch (error) {
+      if (isMissingDependency(error)) {
+        throw new ServiceError(
+          'dependency_unavailable',
+          500,
+          `${SAFE_MESSAGES.dependency_unavailable} (${error.code ?? 'dependency'})`,
+          { cause: error },
+        );
+      }
+      throw new ServiceError(
+        'startup_failed',
+        500,
+        'Schema validation could not be compiled; the review service did not start.',
+        { cause: error },
+      );
+    }
+  })();
+  return corePromise;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneState(state) {
+  try {
+    return structuredClone(state);
+  } catch {
+    return state;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+function safeMessageFor(code) {
+  return SAFE_MESSAGES[code] ?? SAFE_MESSAGES.internal_error;
+}
+
+function limitErrors(errors) {
+  if (!Array.isArray(errors)) return undefined;
+  const safe = errors
+    .filter((item) => typeof item === 'string')
+    .slice(0, 20)
+    .map((item) => item.slice(0, 300));
+  return safe.length ? safe : undefined;
+}
+
+function safeViewCode(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function publicViewStatus(viewStatus) {
+  const status = isRecord(viewStatus) ? viewStatus : null;
+  const rawStatus = status?.status;
+  const statusValue =
+    rawStatus === 'not_rendered'
+      ? 'pending'
+      : rawStatus === 'rendered' || rawStatus === 'pending' || rawStatus === 'unknown'
+        ? rawStatus
+        : 'pending';
+  const output = {
+    status: statusValue,
+    viewLocation:
+      typeof status?.path === 'string' && status.path !== ''
+        ? path.basename(status.path)
+        : REVIEW_VIEW_BASENAME,
+  };
+  if (status && Number.isSafeInteger(status.stateVersion)) {
+    output.stateVersion = status.stateVersion;
+  }
+  if (
+    status &&
+    typeof status.fileDigest === 'string' &&
+    /^sha256:[0-9a-f]{64}$/.test(status.fileDigest)
+  ) {
+    output.fileDigest = status.fileDigest;
+  }
+  const reason = safeViewCode(status?.reason);
+  if (reason) output.reason = reason;
+  if (status && isRecord(status.error)) {
+    output.error = {
+      code: safeViewCode(status.error.code) ?? 'render_failed',
+    };
+  }
+  return output;
+}
+
+function sanitizeDetails(details) {
+  if (!isRecord(details)) return undefined;
+  const output = {};
+  const errors = limitErrors(details.errors);
+  if (errors) output.errors = errors;
+  const reason = safeViewCode(details.reason);
+  if (reason) output.reason = reason;
+  if (Number.isSafeInteger(details.currentStateVersion)) {
+    output.currentStateVersion = details.currentStateVersion;
+  }
+  if (
+    typeof details.currentDigest === 'string' &&
+    /^sha256:[0-9a-f]{64}$/.test(details.currentDigest)
+  ) {
+    output.currentDigest = details.currentDigest;
+  }
+  if (details.viewStatus) output.viewStatus = publicViewStatus(details.viewStatus);
+  return Object.keys(output).length ? output : undefined;
+}
+
+function publicError(error) {
+  if (error instanceof ServiceError) {
+    return {
+      status: error.status,
+      code: error.code,
+      commitStatus: error.commitStatus,
+      message: error.message || safeMessageFor(error.code),
+      details: sanitizeDetails(error.details),
+      closeConnection: error.closeConnection,
+      noResponse: error.noResponse,
+    };
+  }
+  if (error && typeof error === 'object' && typeof error.code === 'string') {
+    const status = Number.isInteger(error.status) ? error.status : 500;
+    return {
+      status,
+      code: error.code,
+      commitStatus: error.commitStatus ?? (status >= 500 ? 'unknown' : 'not_committed'),
+      message: safeMessageFor(error.code),
+      details: sanitizeDetails(error.details),
+      closeConnection: false,
+      noResponse: false,
+    };
+  }
+  return {
+    status: 500,
+    code: 'internal_error',
+    commitStatus: 'not_committed',
+    message: SAFE_MESSAGES.internal_error,
+    details: undefined,
+    closeConnection: false,
+    noResponse: false,
+  };
+}
+
+function setBaseHeaders(res) {
+  if (res.headersSent) return;
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+}
+
+function contentSecurityPolicy(nonce) {
+  return [
+    "default-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+    "style-src 'unsafe-inline'",
+    "connect-src 'self'",
+    "img-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+  ].join('; ');
+}
+
+function sendJson(req, res, status, body, options = {}) {
+  if (res.writableEnded || res.destroyed) return false;
+  setBaseHeaders(res);
+  if (options.allow) res.setHeader('Allow', options.allow);
+  let bytes;
+  try {
+    bytes = Buffer.from(JSON.stringify(body), 'utf8');
+  } catch {
+    return sendJson(req, res, 500, {
+      ok: false,
+      code: 'internal_error',
+      commitStatus: 'not_committed',
+      error: { code: 'internal_error', message: SAFE_MESSAGES.internal_error },
+    });
+  }
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Length', String(bytes.byteLength));
+  if (options.closeConnection) {
+    res.setHeader('Connection', 'close');
+    res.shouldKeepAlive = false;
+    res.once('finish', () => {
+      try {
+        // Graceful half-close after the response is queued; destroying the
+        // socket here can truncate the 413/400 response into a client reset.
+        req.socket.end();
+      } catch {
+        // The socket may already be gone; nothing else to clean up.
+      }
+    });
+  }
+  res.end(bytes);
+  return true;
+}
+
+function respondError(req, res, error) {
+  const info = publicError(error);
+  if (info.noResponse || res.writableEnded || res.destroyed) return;
+  const body = {
+    ok: false,
+    code: info.code,
+    commitStatus: info.commitStatus,
+    error: { code: info.code, message: info.message },
+  };
+  if (info.details) {
+    body.details = info.details;
+    if (info.details.viewStatus) body.viewStatus = info.details.viewStatus;
+    if (info.details.currentStateVersion !== undefined) {
+      body.currentStateVersion = info.details.currentStateVersion;
+    }
+    if (info.details.currentDigest !== undefined) {
+      body.currentDigest = info.details.currentDigest;
+    }
+  }
+  sendJson(req, res, info.status, body, { closeConnection: info.closeConnection });
+}
+
+function headerCounts(req) {
+  const counts = new Map();
+  const raw = Array.isArray(req.rawHeaders) ? req.rawHeaders : [];
+  for (let index = 0; index + 1 < raw.length; index += 2) {
+    const name = String(raw[index]).toLowerCase();
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function parseCookie(req, name) {
+  const header = req.headers.cookie;
+  if (header === undefined) return { present: false, value: null };
+  if (typeof header !== 'string' || header.length > COOKIE_MAX_LENGTH) {
+    throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+      closeConnection: true,
+    });
+  }
+  let found;
+  for (const part of header.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    if (found !== undefined) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+        closeConnection: true,
+      });
+    }
+    found = part.slice(separator + 1).trim();
+  }
+  return found === undefined ? { present: false, value: null } : { present: true, value: found };
+}
+
+function parseTarget(req) {
+  const raw = req.url;
+  if (
+    typeof raw !== 'string' ||
+    raw.length === 0 ||
+    raw.length > MAX_REQUEST_TARGET_LENGTH ||
+    !raw.startsWith('/') ||
+    raw.includes('#')
+  ) {
+    throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+  }
+  const queryIndex = raw.indexOf('?');
+  return {
+    pathname: queryIndex === -1 ? raw : raw.slice(0, queryIndex),
+    search: queryIndex === -1 ? '' : raw.slice(queryIndex + 1),
+  };
+}
+
+function createSerialQueue(maxQueue) {
+  const pending = [];
+  let active = 0;
+  let running = false;
+  let closed = false;
+
+  const abortError = () =>
+    new ServiceError('client_aborted', 499, SAFE_MESSAGES.client_aborted, { noResponse: true });
+
+  function pump() {
+    if (running || closed) return;
+    let entry;
+    while (pending.length) {
+      entry = pending.shift();
+      if (!entry.settled) break;
+      entry = undefined;
+    }
+    if (!entry) return;
+    running = true;
+    active += 1;
+    entry.started = true;
+    entry.signal?.removeEventListener('abort', entry.onAbort);
+    Promise.resolve()
+      .then(() => entry.task())
+      .then(
+        (value) => {
+          if (!entry.settled) {
+            entry.settled = true;
+            entry.resolve(value);
+          }
+        },
+        (error) => {
+          if (!entry.settled) {
+            entry.settled = true;
+            entry.reject(error);
+          }
+        },
+      )
+      .finally(() => {
+        running = false;
+        active -= 1;
+        pump();
+      });
+  }
+
+  return {
+    enqueue(task, signal) {
+      if (closed) {
+        return Promise.reject(
+          new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable),
+        );
+      }
+      if (active + pending.length >= maxQueue) {
+        return Promise.reject(
+          new ServiceError('queue_full', 503, SAFE_MESSAGES.queue_full),
+        );
+      }
+      if (signal?.aborted) return Promise.reject(abortError());
+      return new Promise((resolve, reject) => {
+        const entry = {
+          task,
+          signal,
+          resolve,
+          reject,
+          settled: false,
+          started: false,
+          onAbort: null,
+        };
+        entry.onAbort = () => {
+          if (entry.settled || entry.started) return;
+          entry.settled = true;
+          entry.signal?.removeEventListener('abort', entry.onAbort);
+          reject(abortError());
+        };
+        signal?.addEventListener('abort', entry.onAbort, { once: true });
+        pending.push(entry);
+        pump();
+      });
+    },
+    close() {
+      closed = true;
+      for (const entry of pending.splice(0)) {
+        if (!entry.settled) {
+          entry.settled = true;
+          entry.signal?.removeEventListener('abort', entry.onAbort);
+          entry.reject(new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable));
+        }
+      }
+    },
+  };
+}
+
+function readJsonBody(req, res, controller, options) {
+  const { maxBytes, timeoutMs } = options;
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let done = false;
+    let bodyEnded = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+      req.off('aborted', onAborted);
+      res.off('close', onClose);
+    };
+    const fail = (error) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      try {
+        req.pause();
+      } catch {
+        // Already closed.
+      }
+      if (error.noResponse) controller.abort();
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      controller.abort();
+      fail(
+        new ServiceError('request_timeout', 408, SAFE_MESSAGES.request_timeout, {
+          closeConnection: true,
+        }),
+      );
+    }, timeoutMs);
+
+    function onData(chunk) {
+      if (done) return;
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        fail(
+          new ServiceError('payload_too_large', 413, SAFE_MESSAGES.payload_too_large, {
+            closeConnection: true,
+          }),
+        );
+        return;
+      }
+      chunks.push(chunk);
+    }
+    function onEnd() {
+      if (done) return;
+      bodyEnded = true;
+      let text;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+      } catch {
+        fail(new ServiceError('invalid_utf8', 400, SAFE_MESSAGES.invalid_utf8));
+        return;
+      }
+      let value;
+      try {
+        value = JSON.parse(text);
+      } catch {
+        fail(new ServiceError('invalid_json', 400, SAFE_MESSAGES.invalid_json));
+        return;
+      }
+      if (!isRecord(value)) {
+        fail(new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request));
+        return;
+      }
+      done = true;
+      cleanup();
+      resolve(value);
+    }
+    function onError() {
+      fail(new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request));
+    }
+    function onAborted() {
+      controller.abort();
+      fail(new ServiceError('client_aborted', 499, SAFE_MESSAGES.client_aborted, { noResponse: true }));
+    }
+    function onClose() {
+      if (!bodyEnded && !done) onAborted();
+    }
+
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+    req.on('aborted', onAborted);
+    res.on('close', onClose);
+  });
+}
+
+function checkContentHeaders(req, maxBodyBytes) {
+  const contentEncoding = req.headers['content-encoding'];
+  if (contentEncoding !== undefined && String(contentEncoding).toLowerCase() !== 'identity') {
+    throw new ServiceError('unsupported_media_type', 415, SAFE_MESSAGES.unsupported_media_type, {
+      closeConnection: true,
+    });
+  }
+
+  const transferEncoding = req.headers['transfer-encoding'];
+  if (transferEncoding !== undefined && String(transferEncoding).toLowerCase() !== 'chunked') {
+    throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+      closeConnection: true,
+    });
+  }
+
+  const contentLength = req.headers['content-length'];
+  if (contentLength !== undefined) {
+    if (!/^\d+$/.test(String(contentLength))) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+        closeConnection: true,
+      });
+    }
+    const length = Number(contentLength);
+    if (!Number.isSafeInteger(length)) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+        closeConnection: true,
+      });
+    }
+    if (length > maxBodyBytes) {
+      throw new ServiceError('payload_too_large', 413, SAFE_MESSAGES.payload_too_large, {
+        closeConnection: true,
+      });
+    }
+  }
+  if (transferEncoding !== undefined && contentLength !== undefined) {
+    throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+      closeConnection: true,
+    });
+  }
+
+  const contentType = req.headers['content-type'];
+  if (contentType === undefined || !JSON_CONTENT_TYPE.test(String(contentType))) {
+    throw new ServiceError('unsupported_media_type', 415, SAFE_MESSAGES.unsupported_media_type, {
+      closeConnection: true,
+    });
+  }
+}
+
+function createFallbackPage({
+  snapshot,
+  nonce,
+  stateLocation,
+  stateIdentity,
+  language,
+  legacySchema01 = false,
+}) {
+  const zh = language !== 'en';
+  const projectName = snapshot.state?.project?.name ?? (zh ? '未命名项目' : 'Unnamed project');
+  const version = snapshot.stateVersion ?? snapshot.state?.stateVersion ?? '?';
+  const schemaVersion = snapshot.schemaVersion ?? snapshot.state?.schemaVersion ?? null;
+  const digest = typeof snapshot.fileDigest === 'string' ? snapshot.fileDigest : '';
+  const writable = snapshot.writable ? (zh ? '可写' : 'Writable') : (zh ? '只读' : 'Read-only');
+  const readOnlyReason = snapshot.readOnlyReason ?? '';
+  const viewStatus = snapshot.viewStatus?.status ?? 'pending';
+  const heading = legacySchema01
+    ? (zh ? '产品连续性 · 旧版 0.1 状态（只读）' : 'Product continuity · legacy 0.1 state (read-only)')
+    : (zh ? '产品连续性 · 实时意图评审' : 'Product continuity · live intent review');
+  const note = legacySchema01
+    ? (zh
+        ? '此状态文件使用旧版 schema 0.1。服务只读展示摘要，不会自动迁移，也不接受评审写入。关闭本服务后，请使用 node scripts/migrate-state.mjs <state-file> 显式迁移到 0.2，核对迁移结果后再重新启动服务。'
+        : 'This state file uses legacy schema 0.1. The service displays a read-only summary, does not migrate it automatically, and rejects review writes. Stop this service, run node scripts/migrate-state.mjs <state-file> to migrate to 0.2 explicitly, verify the result, then start the service again.')
+    : (zh
+        ? '完整评审界面模块尚未安装到本次构建；服务接口仍按同一套来源、会话与确认规则运行。'
+        : 'The full review UI module is not installed in this build; the API still follows the same origin, session and confirmation rules.');
+  const legacyRows = legacySchema01
+    ? `<dt>${escapeHtml(zh ? 'Schema 版本' : 'Schema version')}</dt><dd>${escapeHtml(String(schemaVersion ?? '0.1'))}</dd>
+<dt>${escapeHtml(zh ? '迁移' : 'Migration')}</dt><dd>${escapeHtml(zh ? '需要关闭服务后显式迁移；服务不会自动迁移' : 'Explicit migration after stopping the service; this service never migrates automatically')}</dd>
+`
+    : '';
+  return `<!doctype html>
+<html lang="${escapeHtml(language)}">
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(heading)}</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 52rem; padding: 0 1rem; line-height: 1.5; }
+h1 { font-size: 1.35rem; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; }
+dt { font-weight: 600; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.note { border-left: 3px solid currentColor; padding-left: .75rem; opacity: .8; }
+</style>
+</head>
+<body>
+<main>
+<h1>${escapeHtml(heading)}</h1>
+<p class="note">${escapeHtml(note)}</p>
+<dl>
+<dt>${escapeHtml(zh ? '项目' : 'Project')}</dt><dd>${escapeHtml(projectName)}</dd>
+<dt>${escapeHtml(zh ? '状态位置' : 'State location')}</dt><dd>${escapeHtml(stateLocation)}</dd>
+<dt>${escapeHtml(zh ? '状态身份' : 'State identity')}</dt><dd>${escapeHtml(String(stateIdentity).slice(0, 23))}…</dd>
+${legacyRows}<dt>${escapeHtml(zh ? '状态版本' : 'State version')}</dt><dd>${escapeHtml(version)}</dd>
+<dt>${escapeHtml(zh ? '文件摘要' : 'File digest')}</dt><dd>${escapeHtml(digest.slice(0, 19))}…</dd>
+<dt>${escapeHtml(zh ? '写入状态' : 'Write status')}</dt><dd>${escapeHtml(writable)}${readOnlyReason ? ` (${escapeHtml(readOnlyReason)})` : ''}</dd>
+<dt>${escapeHtml(zh ? '派生视图' : 'Derived view')}</dt><dd>${escapeHtml(viewStatus)}</dd>
+</dl>
+</main>
+<script nonce="${escapeHtml(nonce)}">document.documentElement.dataset.reviewService = "ready";</script>
+</body>
+</html>`;
+}
+
+function canonicalIdentityPath(value) {
+  let resolved = path.resolve(value);
+  if (process.platform === 'win32') {
+    resolved = resolved.replaceAll('/', '\\').toLowerCase();
+  }
+  return resolved;
+}
+
+function computeStateLocation(canonicalPath, projectRoot) {
+  let relative = path.relative(projectRoot, canonicalPath);
+  if (
+    relative === '' ||
+    relative === '..' ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    relative = path.basename(canonicalPath);
+  }
+  return relative.split(path.sep).join('/');
+}
+
+function publicState(snapshot, context) {
+  const stateVersion =
+    snapshot.stateVersion ?? snapshot.currentStateVersion ?? snapshot.state?.stateVersion ?? null;
+  const fileDigest = snapshot.fileDigest ?? snapshot.currentDigest ?? null;
+  return {
+    ok: true,
+    state: snapshot.state,
+    fileDigest,
+    currentDigest: fileDigest,
+    currentStateVersion: stateVersion,
+    writable: Boolean(snapshot.writable),
+    readOnlyReason: snapshot.readOnlyReason ?? null,
+    viewStatus: publicViewStatus(snapshot.viewStatus),
+    stateIdentity: context.stateIdentity,
+    stateLocation: context.stateLocation,
+    timelineHistory: snapshot.timelineHistory ?? null,
+  };
+}
+
+function publicPreview(result) {
+  const source = result?.preview ?? result;
+  const preview = {};
+  for (const key of ['previewDigest', 'plan', 'action', 'requiresPreview', 'attestations']) {
+    if (source && source[key] !== undefined) preview[key] = source[key];
+  }
+  if (preview.previewDigest === undefined && result?.previewDigest !== undefined) {
+    preview.previewDigest = result.previewDigest;
+  }
+  if (preview.requiresPreview === undefined && typeof preview.plan?.requiresPreview === 'boolean') {
+    preview.requiresPreview = preview.plan.requiresPreview;
+  }
+  if (preview.attestations === undefined && Array.isArray(preview.plan?.attestations)) {
+    preview.attestations = preview.plan.attestations;
+  }
+  return {
+    ok: true,
+    preview,
+    previewDigest: preview.previewDigest ?? null,
+    currentStateVersion: result?.currentStateVersion ?? null,
+    currentDigest: result?.currentDigest ?? null,
+    viewStatus: publicViewStatus(result?.viewStatus),
+  };
+}
+
+function publicSubmit(result) {
+  const output = {
+    ok: result?.ok !== false,
+    outcome: result?.outcome ?? 'saved',
+    commitStatus: result?.commitStatus ?? 'verified',
+  };
+  if (result?.reviewId !== undefined) output.reviewId = result.reviewId;
+  if (result?.resultingStateVersion !== undefined) {
+    output.resultingStateVersion = result.resultingStateVersion;
+  }
+  if (result?.currentStateVersion !== undefined) {
+    output.currentStateVersion = result.currentStateVersion;
+  }
+  if (result?.currentDigest !== undefined) output.currentDigest = result.currentDigest;
+  if (result?.replayed !== undefined) output.replayed = result.replayed;
+  if (result?.error && typeof result.error === 'object' && typeof result.error.code === 'string') {
+    output.error = { code: result.error.code };
+  }
+  output.viewStatus = publicViewStatus(result?.viewStatus);
+  return output;
+}
+
+function publicRender(result) {
+  return {
+    ok: true,
+    viewStatus: publicViewStatus(result?.viewStatus),
+    stateVersion: result?.stateVersion ?? null,
+    currentDigest: result?.currentDigest ?? null,
+  };
+}
+
+function rendererSnapshot(snapshot) {
+  return {
+    state: cloneState(snapshot.state),
+    stateVersion: snapshot.stateVersion ?? snapshot.state?.stateVersion ?? null,
+    fileDigest: snapshot.fileDigest ?? snapshot.currentDigest ?? null,
+    writable: Boolean(snapshot.writable),
+    readOnlyReason: snapshot.readOnlyReason ?? null,
+    viewStatus: publicViewStatus(snapshot.viewStatus),
+    projectId: snapshot.projectId ?? snapshot.state?.project?.id ?? null,
+    schemaVersion: snapshot.schemaVersion ?? snapshot.state?.schemaVersion ?? null,
+    timelineHistory: snapshot.timelineHistory ?? null,
+  };
+}
+
+/**
+ * Start the one HTTP entry point for a single state file.
+ *
+ * @param {string} statePath
+ * @param {{
+ *   port?: number,
+ *   language?: 'zh-CN'|'en',
+ *   maxStateBytes?: number,
+ *   maxBodyBytes?: number,
+ *   maxQueue?: number,
+ *   bodyTimeoutMs?: number,
+ *   headersTimeoutMs?: number,
+ *   requestTimeoutMs?: number,
+ *   keepAliveTimeoutMs?: number,
+ *   closeTimeoutMs?: number,
+ *   renderReview?: Function|null,
+ *   renderViews?: Function|null,
+ *   store?: object,
+ *   logger?: Function,
+ *   actor?: string,
+ *   clock?: Function|Date|string,
+ *   idFactory?: Function,
+ *   domain?: object,
+ *   fs?: object,
+ *   hooks?: object,
+ *   projectRoot?: string
+ * }} [options]
+ * @returns {Promise<{url: string, port: number, server: import('node:http').Server, store: object, close: Function}>}
+ */
+export async function startReviewService(statePath, options = {}) {
+  if (typeof statePath !== 'string' || statePath.trim() === '') {
+    throw new ServiceError('invalid_path', 400, SAFE_MESSAGES.invalid_path);
+  }
+  const language = options.language ?? 'zh-CN';
+  if (!SUPPORTED_LANGUAGES.has(language)) {
+    throw new ServiceError('invalid_request', 400, 'Unsupported language option.');
+  }
+  const port = options.port ?? DEFAULT_PORT;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new ServiceError('invalid_request', 400, 'Port must be an integer from 0 to 65535.');
+  }
+  const maxStateBytes = options.maxStateBytes ?? DEFAULT_MAX_STATE_BYTES;
+  if (!Number.isSafeInteger(maxStateBytes) || maxStateBytes <= 0) {
+    throw new ServiceError('invalid_request', 400, 'maxStateBytes must be a positive safe integer.');
+  }
+  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
+    throw new ServiceError('invalid_request', 400, 'maxBodyBytes must be a positive safe integer.');
+  }
+  const maxQueue = options.maxQueue ?? DEFAULT_MAX_QUEUE;
+  if (!Number.isSafeInteger(maxQueue) || maxQueue < 1) {
+    throw new ServiceError('invalid_request', 400, 'maxQueue must be a positive safe integer.');
+  }
+  const bodyTimeoutMs = options.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
+  if (!Number.isSafeInteger(bodyTimeoutMs) || bodyTimeoutMs < 1) {
+    throw new ServiceError('invalid_request', 400, 'bodyTimeoutMs must be a positive safe integer.');
+  }
+  if (
+    options.renderReview !== undefined &&
+    options.renderReview !== null &&
+    typeof options.renderReview !== 'function'
+  ) {
+    throw new ServiceError('invalid_request', 400, 'renderReview must be a function or null.');
+  }
+  if (
+    options.renderViews !== undefined &&
+    options.renderViews !== null &&
+    typeof options.renderViews !== 'function'
+  ) {
+    throw new ServiceError('invalid_request', 400, 'renderViews must be a function or null.');
+  }
+  if (options.projectRoot !== undefined && typeof options.projectRoot !== 'string') {
+    throw new ServiceError('invalid_request', 400, 'projectRoot must be a string.');
+  }
+  if (
+    options.store !== undefined &&
+    (options.store === null || typeof options.store !== 'object')
+  ) {
+    throw new ServiceError('invalid_request', 400, 'store must be a store object.');
+  }
+
+  const core = await loadCore();
+  const projectRoot = options.projectRoot ?? process.cwd();
+  let canonicalPath;
+  let stateLocation;
+  let store;
+  // Validate authorization before taking any writer/view lock.
+  const conversationAuthorization = options.conversationAuthorization
+    ? await loadConversationAuthorization(options.conversationAuthorization, { statePath })
+    : null;
+  try {
+    if (options.store) {
+      store = options.store;
+      canonicalPath =
+        typeof store.statePath === 'string' && store.statePath !== ''
+          ? store.statePath
+          : path.resolve(statePath);
+      stateLocation = computeStateLocation(canonicalPath, projectRoot);
+    } else {
+      // Compute the same canonical location and project-relative display path
+      // before the store is opened. That exact value is passed as the trusted
+      // decisionRecordPath so previewReview and applyReview write the same
+      // decision_record.path as GET /api/state exposes. It is never client
+      // input. State outside projectRoot falls back to a basename, explicitly
+      // avoiding absolute paths in both the API and persisted evidence.
+      const io = core.createIoAdapter(options.fs);
+      const canonical = await core.canonicalizeStatePath(statePath, {
+        io,
+        mustExist: true,
+      });
+      canonicalPath = canonical.path;
+      let locationRoot = path.resolve(projectRoot);
+      try {
+        // Prefer the real project root so a symlinked project directory still
+        // yields a project-relative decisionRecordPath instead of a basename.
+        locationRoot = await io.realpath(locationRoot);
+      } catch {
+        // Keep the resolved lexical root when the root cannot be resolved.
+      }
+      stateLocation = computeStateLocation(canonicalPath, locationRoot);
+      store = await core.openStateStore(statePath, {
+        actor: options.actor,
+        clock: options.clock,
+        idFactory: options.idFactory,
+        domain: options.domain,
+        fs: options.fs,
+        hooks: options.hooks,
+        maxStateBytes,
+        maxQueue,
+        port,
+        decisionRecordPath: stateLocation,
+        renderViews:
+          options.renderViews !== undefined
+            ? options.renderViews
+            : ({ state }) => renderMap(state, language),
+      });
+    }
+  } catch (error) {
+    throw error;
+  }
+
+  const identityPath = canonicalIdentityPath(canonicalPath);
+  const stateIdentity = `sha256:${createHash('sha256').update(identityPath).digest('hex')}`;
+  let sessionCookieName = '';
+  const sessionValue = randomBytes(32).toString('hex');
+  const logger =
+    typeof options.logger === 'function'
+      ? options.logger
+      : (entry) => console.error(JSON.stringify(entry));
+
+  let expectedHost = '';
+  let expectedOrigin = '';
+  let closed = false;
+  let closePromise = null;
+  let rendererPromise;
+
+  const queue = createSerialQueue(maxQueue);
+
+  function logAction(entry) {
+    try {
+      logger({
+        reviewId: entry.reviewId ?? null,
+        action: entry.action ?? null,
+        target: entry.target ?? null,
+        result: entry.result ?? null,
+        phase: entry.phase ?? null,
+      });
+    } catch {
+      // Logging must never affect the response.
+    }
+  }
+
+  async function readSnapshot() {
+    if (typeof store.read === 'function') return await store.read();
+    if (typeof store.getSnapshot === 'function') return await store.getSnapshot();
+    throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+  }
+
+  async function withTimelineHistory(snapshot) {
+    if (snapshot.state?.schemaVersion !== '0.2') return snapshot;
+    // An injected store has no implied permission to inspect filesystem paths.
+    if (options.store) return snapshot;
+    const { readTimelineHistory } = await import('./timeline-history.mjs');
+    const timelineHistory = await readTimelineHistory(canonicalPath, snapshot, { maxStateBytes });
+    return { ...snapshot, timelineHistory };
+  }
+
+  function verifySession(req) {
+    const cookie = parseCookie(req, sessionCookieName);
+    if (!cookie.present) {
+      throw new ServiceError('no_session', 403, SAFE_MESSAGES.no_session);
+    }
+    if (
+      typeof cookie.value !== 'string' ||
+      cookie.value.length !== sessionValue.length ||
+      !/^[0-9a-f]+$/.test(cookie.value)
+    ) {
+      throw new ServiceError('no_session', 403, SAFE_MESSAGES.no_session);
+    }
+    const supplied = Buffer.from(cookie.value, 'utf8');
+    const expected = Buffer.from(sessionValue, 'utf8');
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      throw new ServiceError('no_session', 403, SAFE_MESSAGES.no_session);
+    }
+  }
+
+  function assertKnownAction(body) {
+    if (typeof body?.action === 'string' && !KNOWN_ACTIONS.has(body.action)) {
+      throw new ServiceError('unknown_action', 400, SAFE_MESSAGES.unknown_action);
+    }
+  }
+
+  function guardTransport(req) {
+    const counts = headerCounts(req);
+    const hostCount = counts.get('host') ?? 0;
+    if (hostCount !== 1) {
+      throw new ServiceError('bad_host', 403, SAFE_MESSAGES.bad_host, {
+        closeConnection: true,
+      });
+    }
+    if (req.headers.host !== expectedHost) {
+      throw new ServiceError('bad_host', 403, SAFE_MESSAGES.bad_host);
+    }
+    for (const name of SENSITIVE_HEADERS) {
+      if (name === 'host') continue;
+      if ((counts.get(name) ?? 0) > 1) {
+        throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+          closeConnection: true,
+        });
+      }
+    }
+    const origin = req.headers.origin;
+    if (origin !== undefined && (typeof origin !== 'string' || origin !== expectedOrigin)) {
+      throw new ServiceError('bad_origin', 403, SAFE_MESSAGES.bad_origin);
+    }
+    const fetchSite = req.headers['sec-fetch-site'];
+    if (fetchSite !== undefined && String(fetchSite).toLowerCase() === 'cross-site') {
+      throw new ServiceError('bad_origin', 403, SAFE_MESSAGES.bad_origin);
+    }
+  }
+
+  function guardRoute(req, route) {
+    if (route.originRequired) {
+      if (req.headers.origin !== expectedOrigin) {
+        throw new ServiceError('bad_origin', 403, SAFE_MESSAGES.bad_origin);
+      }
+      const fetchSite = req.headers['sec-fetch-site'];
+      if (fetchSite !== undefined) {
+        const value = String(fetchSite).toLowerCase();
+        if (value !== 'same-origin' && value !== 'none') {
+          throw new ServiceError('bad_origin', 403, SAFE_MESSAGES.bad_origin);
+        }
+      }
+    }
+    if (route.session) verifySession(req);
+    if (route.actionRequired) {
+      const actionHeader = req.headers['x-review-action'];
+      if (actionHeader !== '1') {
+        throw new ServiceError(
+          'missing_action_header',
+          403,
+          SAFE_MESSAGES.missing_action_header,
+        );
+      }
+    }
+  }
+
+  async function resolveRenderer() {
+    if (options.renderReview === null) return null;
+    if (typeof options.renderReview === 'function') return options.renderReview;
+    if (rendererPromise === undefined) {
+      rendererPromise = import('./render-review.mjs')
+        .then((module) => {
+          if (typeof module.renderReview !== 'function') {
+            throw new ServiceError(
+              'render_page_failed',
+              500,
+              'render-review.mjs does not export renderReview().',
+            );
+          }
+          return module.renderReview;
+        })
+        .catch((error) => {
+          if (
+            error?.code === 'ERR_MODULE_NOT_FOUND' &&
+            /render-review\.mjs/i.test(String(error.message))
+          ) {
+            return null;
+          }
+          throw new ServiceError(
+            'render_page_failed',
+            500,
+            SAFE_MESSAGES.render_page_failed,
+            { cause: error },
+          );
+        });
+    }
+    return rendererPromise;
+  }
+
+  async function handlePage(req, res, signal) {
+    const snapshot = await withTimelineHistory(
+      typeof store.getSnapshot === 'function'
+        ? await store.getSnapshot()
+        : await readSnapshot());
+    if (signal.aborted || res.destroyed) return;
+    const nonce = randomBytes(16).toString('base64');
+    const schemaVersion = snapshot.schemaVersion ?? snapshot.state?.schemaVersion ?? null;
+    let html;
+    if (schemaVersion === '0.1') {
+      // render-review.mjs deliberately accepts only 0.2 states. A 0.1 file is
+      // always opened read-only by state-store, so render the explicit legacy
+      // notice here and never invoke a 0.2-only renderer. Migration stays a
+      // separate, manual step; this service never rewrites a 0.1 state.
+      html = createFallbackPage({
+        snapshot: rendererSnapshot(snapshot),
+        nonce,
+        stateLocation,
+        stateIdentity,
+        language,
+        legacySchema01: true,
+      });
+    } else {
+      const renderer = await resolveRenderer();
+      if (typeof renderer === 'function') {
+        html = await renderer(rendererSnapshot(snapshot), {
+          nonce,
+          stateLocation,
+          stateIdentity,
+          language,
+        });
+        if (typeof html !== 'string' || html.length === 0) {
+          throw new ServiceError('render_page_failed', 500, SAFE_MESSAGES.render_page_failed);
+        }
+      } else {
+        html = createFallbackPage({
+          snapshot: rendererSnapshot(snapshot),
+          nonce,
+          stateLocation,
+          stateIdentity,
+          language,
+        });
+      }
+    }
+    if (signal.aborted || res.writableEnded || res.destroyed) return;
+    setBaseHeaders(res);
+    res.setHeader('Content-Security-Policy', contentSecurityPolicy(nonce));
+    res.setHeader(
+      'Set-Cookie',
+      `${sessionCookieName}=${sessionValue}; HttpOnly; SameSite=Strict; Path=/`,
+    );
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    const bytes = Buffer.from(html, 'utf8');
+    res.setHeader('Content-Length', String(bytes.byteLength));
+    res.end(bytes);
+  }
+
+  async function handleState(req, res, signal) {
+    const snapshot = await withTimelineHistory(await readSnapshot());
+    if (signal.aborted || res.destroyed) return;
+    sendJson(req, res, 200, publicState(snapshot, { stateIdentity, stateLocation }));
+  }
+
+  async function handleSnapshot(req, res, signal) {
+    const params = new URLSearchParams(parseTarget(req).search);
+    const keys = [...params.keys()];
+    const version = params.get('version'), digest = params.get('digest');
+    if (keys.length !== 2 || !keys.includes('version') || !keys.includes('digest') || !/^[1-9][0-9]{0,15}$/.test(version || '') || !Number.isSafeInteger(Number(version)) || !/^sha256:[0-9a-f]{64}$/.test(digest || '')) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+    }
+    const snapshot = await readSnapshot();
+    // Injected stores never imply permission to read adjacent filesystem paths.
+    if (options.store || snapshot.state?.schemaVersion !== '0.2') {
+      throw new ServiceError('snapshot_unavailable', 404, SAFE_MESSAGES.snapshot_unavailable);
+    }
+    const { readTimelineSnapshot } = await import('./timeline-history.mjs');
+    const result = await readTimelineSnapshot(canonicalPath, snapshot, {stateVersion:Number(version), digest}, {maxStateBytes,signal});
+    if (signal.aborted || res.destroyed) return;
+    if (!result) throw new ServiceError('snapshot_unavailable', 404, SAFE_MESSAGES.snapshot_unavailable);
+    sendJson(req, res, 200, {
+      ok:true, state:result.state, sample:result.sample, fileDigest:digest,
+      stateIdentity, writable:false, historical:true,
+      currentStateVersion:snapshot.state.stateVersion,
+      currentDigest:snapshot.fileDigest ?? snapshot.currentDigest,
+    });
+  }
+
+  function handleHealth(req, res) {
+    sendJson(req, res, 200, { ok: true });
+  }
+
+  async function handlePreview(req, res, signal, controller) {
+    checkContentHeaders(req, maxBodyBytes);
+    const body = await readJsonBody(req, res, controller, {
+      maxBytes: maxBodyBytes,
+      timeoutMs: bodyTimeoutMs,
+    });
+    assertKnownAction(body);
+    const errors = core.validatePreviewRequest(body);
+    if (errors.length) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+        details: { errors },
+      });
+    }
+    const result = await queue.enqueue(() => {
+      if (signal.aborted) {
+        throw new ServiceError('client_aborted', 499, SAFE_MESSAGES.client_aborted, {
+          noResponse: true,
+        });
+      }
+      if (typeof store.preview !== 'function') {
+        throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+      }
+      return store.preview(body);
+    }, signal);
+    if (signal.aborted || res.destroyed) return;
+    sendJson(req, res, 200, publicPreview(result));
+  }
+
+  async function handleReviews(req, res, signal, controller) {
+    checkContentHeaders(req, maxBodyBytes);
+    const body = await readJsonBody(req, res, controller, {
+      maxBytes: maxBodyBytes,
+      timeoutMs: bodyTimeoutMs,
+    });
+    assertKnownAction(body);
+    const errors = core.validateReviewRequest(body);
+    if (errors.length) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+        details: { errors },
+      });
+    }
+    const action = body.action;
+    const target = body.targetClaimId ?? body.targetProposalId ?? null;
+    try {
+      const result = await queue.enqueue(() => {
+        if (signal.aborted) {
+          throw new ServiceError('client_aborted', 499, SAFE_MESSAGES.client_aborted, {
+            noResponse: true,
+          });
+        }
+        if (typeof store.submitReview !== 'function') {
+          throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+        }
+        return store.submitReview(body);
+      }, signal);
+      logAction({
+        reviewId: result?.reviewId ?? null,
+        action,
+        target,
+        result: result?.outcome ?? 'saved',
+        phase: 'submit',
+      });
+      if (signal.aborted || res.destroyed) return;
+      sendJson(req, res, 200, publicSubmit(result));
+    } catch (error) {
+      logAction({
+        reviewId: null,
+        action,
+        target,
+        result: publicError(error).code,
+        phase: 'submit',
+      });
+      throw error;
+    }
+  }
+
+  async function handleRender(req, res, signal, controller) {
+    checkContentHeaders(req, maxBodyBytes);
+    const body = await readJsonBody(req, res, controller, {
+      maxBytes: maxBodyBytes,
+      timeoutMs: bodyTimeoutMs,
+    });
+    if (Object.keys(body).length !== 0) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+    }
+    try {
+      const result = await queue.enqueue(() => {
+        if (signal.aborted) {
+          throw new ServiceError('client_aborted', 499, SAFE_MESSAGES.client_aborted, {
+            noResponse: true,
+          });
+        }
+        if (typeof store.regenerateView === 'function') return store.regenerateView();
+        if (typeof store.renderView === 'function') return store.renderView();
+        throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+      }, signal);
+      logAction({
+        reviewId: null,
+        action: 'render_view',
+        target: null,
+        result: result?.viewStatus?.status ?? 'rendered',
+        phase: 'render',
+      });
+      if (signal.aborted || res.destroyed) return;
+      sendJson(req, res, 200, publicRender(result));
+    } catch (error) {
+      logAction({
+        reviewId: null,
+        action: 'render_view',
+        target: null,
+        result: publicError(error).code,
+        phase: 'render',
+      });
+      throw error;
+    }
+  }
+
+  const routes = new Map([
+    [
+      '/',
+      {
+        allow: 'GET',
+        session: false,
+        originRequired: false,
+        actionRequired: false,
+        queryAllowed: true,
+        handler: handlePage,
+      },
+    ],
+    [
+      '/api/state',
+      {
+        allow: 'GET',
+        session: true,
+        originRequired: false,
+        actionRequired: false,
+        queryAllowed: false,
+        handler: handleState,
+      },
+    ],
+    [
+      '/api/snapshot',
+      {
+        allow: 'GET',
+        session: true,
+        originRequired: false,
+        actionRequired: false,
+        queryAllowed: true,
+        handler: handleSnapshot,
+      },
+    ],
+    [
+      '/api/health',
+      {
+        allow: 'GET',
+        session: false,
+        originRequired: false,
+        actionRequired: false,
+        queryAllowed: false,
+        handler: handleHealth,
+      },
+    ],
+    [
+      '/api/preview',
+      {
+        allow: 'POST',
+        session: true,
+        originRequired: true,
+        actionRequired: true,
+        queryAllowed: false,
+        handler: handlePreview,
+      },
+    ],
+    [
+      '/api/reviews',
+      {
+        allow: 'POST',
+        session: true,
+        originRequired: true,
+        actionRequired: true,
+        queryAllowed: false,
+        handler: handleReviews,
+      },
+    ],
+    [
+      '/api/render',
+      {
+        allow: 'POST',
+        session: true,
+        originRequired: true,
+        actionRequired: true,
+        queryAllowed: false,
+        handler: handleRender,
+      },
+    ],
+  ]);
+
+  // Separate from the human review cookie and endpoints: possession of this
+  // adapter credential authorizes capture only, never confirmation actions.
+  if (options.conversationAuthorization) {
+    const initialAuthorization = conversationAuthorization;
+    if (initialAuthorization.projectId !== store.getSnapshot().state.project.id) {
+      await store.close();
+      throw new ServiceError('wrong_project', 403, SAFE_MESSAGES.wrong_project);
+    }
+    const handleConversation = (purpose) => async (req, res, signal, controller) => {
+      checkContentHeaders(req, maxBodyBytes);
+      const body = await readJsonBody(req, res, controller, { maxBytes: maxBodyBytes, timeoutMs: bodyTimeoutMs });
+      const authorization = await loadConversationAuthorization(options.conversationAuthorization, { statePath: canonicalPath, projectId: initialAuthorization.projectId, serviceUrl: expectedOrigin });
+      verifyConversationSignature(authorization, purpose, body, req.headers['x-conversation-signature']);
+      if (purpose === 'context') {
+        if (Object.keys(body).length !== 1 || body.projectId !== authorization.projectId) throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+        const snapshot = await readSnapshot();
+        sendJson(req, res, 200, { ok: true, projectId: authorization.projectId, stateVersion: snapshot.state.stateVersion, digest: snapshot.fileDigest ?? snapshot.currentDigest });
+        return;
+      }
+      if (Object.keys(body).length !== 2 || !body.request || !Array.isArray(body.verifiedSources) || body.request.projectId !== authorization.projectId) throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+      const result = await queue.enqueue(() => store.captureConversation(body.request, { verifiedSources: body.verifiedSources, authorizationId: authorization.authorizationId }), signal);
+      if (!signal.aborted && !res.destroyed) sendJson(req, res, 200, result);
+    };
+    for (const purpose of ['context', 'capture']) routes.set(`/api/conversation/${purpose}`, { allow: 'POST', session: false, originRequired: false, actionRequired: false, queryAllowed: false, handler: handleConversation(purpose) });
+  }
+
+  async function handleRequest(req, res) {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const onRequestAborted = () => controller.abort();
+    const onResponseClose = () => {
+      if (!res.writableEnded) controller.abort();
+    };
+    req.on('aborted', onRequestAborted);
+    res.on('close', onResponseClose);
+    try {
+      guardTransport(req);
+      if (req.method === 'OPTIONS' || req.method === 'TRACE') {
+        let pathname = null;
+        try {
+          pathname = parseTarget(req).pathname;
+        } catch {
+          // OPTIONS * and other non-path targets are rejected with 405 below.
+        }
+        const route = pathname ? routes.get(pathname) : null;
+        sendJson(
+          req,
+          res,
+          405,
+          {
+            ok: false,
+            code: 'method_not_allowed',
+            commitStatus: 'not_committed',
+            error: {
+              code: 'method_not_allowed',
+              message: SAFE_MESSAGES.method_not_allowed,
+            },
+          },
+          { allow: route?.allow ?? 'GET, POST' },
+        );
+        return;
+      }
+      const target = parseTarget(req);
+      const route = routes.get(target.pathname);
+      if (!route) {
+        throw new ServiceError('not_found', 404, SAFE_MESSAGES.not_found);
+      }
+      if (req.method !== route.allow) {
+        sendJson(
+          req,
+          res,
+          405,
+          {
+            ok: false,
+            code: 'method_not_allowed',
+            commitStatus: 'not_committed',
+            error: {
+              code: 'method_not_allowed',
+              message: SAFE_MESSAGES.method_not_allowed,
+            },
+          },
+          { allow: route.allow },
+        );
+        return;
+      }
+      if (!route.queryAllowed && target.search !== '') {
+        throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+      }
+      guardRoute(req, route);
+      await route.handler(req, res, signal, controller);
+    } finally {
+      req.off('aborted', onRequestAborted);
+      res.off('close', onResponseClose);
+    }
+  }
+
+  const server = http.createServer((req, res) => {
+    try {
+      void handleRequest(req, res).catch((error) => {
+        try {
+          if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+            respondError(req, res, error);
+          } else if (!res.destroyed) {
+            res.destroy();
+          }
+        } catch {
+          try {
+            req.socket.destroy();
+          } catch {
+            // Nothing else to clean up.
+          }
+        }
+      });
+    } catch (error) {
+      try {
+        respondError(req, res, error);
+      } catch {
+        try {
+          req.socket.destroy();
+        } catch {
+          // Nothing else to clean up.
+        }
+      }
+    }
+  });
+
+  server.headersTimeout = options.headersTimeoutMs ?? DEFAULT_HEADERS_TIMEOUT_MS;
+  server.requestTimeout = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  server.keepAliveTimeout = options.keepAliveTimeoutMs ?? DEFAULT_KEEP_ALIVE_TIMEOUT_MS;
+  server.maxHeadersCount = DEFAULT_MAX_HEADERS;
+  // Make slow/incomplete request handling take effect close to the configured
+  // deadlines instead of waiting for the next coarse Node timer tick.
+  server.connectionsCheckingInterval = 1000;
+
+  server.on('clientError', (error, socket) => {
+    try {
+      if (!socket.writable || socket.destroyed) {
+        socket.destroy();
+        return;
+      }
+      socket.end(
+        'HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+      );
+    } catch {
+      try {
+        socket.destroy();
+      } catch {
+        // Already gone.
+      }
+    }
+  });
+  server.on('connect', (req, socket) => {
+    try {
+      socket.end('HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nConnection: close\r\n\r\n');
+    } catch {
+      socket.destroy();
+    }
+  });
+  server.on('upgrade', (req, socket) => {
+    try {
+      socket.end('HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nConnection: close\r\n\r\n');
+    } catch {
+      socket.destroy();
+    }
+  });
+  server.on('connection', (socket) => {
+    socket.on('error', () => {
+      // A broken client must not crash the review service.
+    });
+  });
+
+  const listen = () =>
+    new Promise((resolve, reject) => {
+      const onError = (error) => {
+        server.off('listening', onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, '127.0.0.1');
+    });
+
+  try {
+    await listen();
+  } catch (error) {
+    if (typeof store.close === 'function') {
+      try {
+        await store.close();
+      } catch {
+        // Releasing the lock is the store's job; preserve the original error.
+      }
+    }
+    const code = error?.code === 'EADDRINUSE' ? 'port_unavailable' : 'startup_failed';
+    throw new ServiceError(code, 503, `${SAFE_MESSAGES[code]} (${error?.code ?? 'listen'})`, {
+      cause: error,
+    });
+  }
+
+  const address = server.address();
+  const actualPort = typeof address === 'object' && address ? address.port : port;
+  expectedHost = `127.0.0.1:${actualPort}`;
+  expectedOrigin = `http://${expectedHost}`;
+  sessionCookieName = `pc_review_${createHash('sha256')
+    .update(`${expectedHost}\n${identityPath}`)
+    .digest('hex')
+    .slice(0, 16)}`;
+  server.on('error', () => {
+    // Runtime socket errors are handled per request; keep the process alive.
+  });
+
+  async function close() {
+    if (closePromise) return closePromise;
+    closePromise = (async () => {
+      if (closed) return { serverClosed: true, storeClosed: false, alreadyClosed: true };
+      closed = true;
+      queue.close();
+      const result = { serverClosed: false, storeClosed: false, alreadyClosed: false };
+      await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          try {
+            server.closeAllConnections?.();
+          } catch {
+            // Best effort.
+          }
+          finish();
+        }, options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS);
+        try {
+          server.close(() => finish());
+          server.closeIdleConnections?.();
+        } catch {
+          finish();
+        }
+      });
+      result.serverClosed = true;
+      if (typeof store.close === 'function') {
+        try {
+          const closedStore = await store.close();
+          result.storeClosed = closedStore?.released !== false;
+        } catch (error) {
+          result.storeClosed = false;
+          result.storeError = typeof error?.code === 'string' ? error.code : 'close_failed';
+        }
+      }
+      return result;
+    })();
+    return closePromise;
+  }
+
+  return {
+    url: `http://127.0.0.1:${actualPort}`,
+    port: actualPort,
+    server,
+    store,
+    close,
+  };
+}
+
+function parseArgs(argv) {
+  const args = { statePath: null, port: DEFAULT_PORT, maxStateBytes: DEFAULT_MAX_STATE_BYTES, language: 'zh-CN' };
+  const positionals = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--help' || argument === '-h') {
+      args.help = true;
+      continue;
+    }
+    if (argument.startsWith('--')) {
+      const equalsIndex = argument.indexOf('=');
+      const name = equalsIndex === -1 ? argument : argument.slice(0, equalsIndex);
+      let value = equalsIndex === -1 ? undefined : argument.slice(equalsIndex + 1);
+      if (value === undefined) {
+        value = argv[index + 1];
+        if (value === undefined || value.startsWith('--')) {
+          throw new Error(`Missing value for ${name}.`);
+        }
+        index += 1;
+      }
+      if (name === '--port') {
+        if (!/^\d+$/.test(value)) throw new Error('--port must be an integer.');
+        args.port = Number(value);
+      } else if (name === '--max-state-bytes') {
+        if (!/^\d+$/.test(value)) throw new Error('--max-state-bytes must be an integer.');
+        args.maxStateBytes = Number(value);
+      } else if (name === '--language') {
+        if (!SUPPORTED_LANGUAGES.has(value)) {
+          throw new Error('--language must be zh-CN or en.');
+        }
+        args.language = value;
+      } else if (name === '--conversation-authorization') {
+        args.conversationAuthorization = value;
+      } else {
+        throw new Error(`Unknown option ${name}; --force is not supported.`);
+      }
+      continue;
+    }
+    positionals.push(argument);
+  }
+  if (args.help) return args;
+  if (positionals.length !== 1) {
+    throw new Error('Usage: node scripts/review-service.mjs <state.json> [--port N] [--max-state-bytes N] [--language zh-CN|en] [--conversation-authorization <file>]');
+  }
+  args.statePath = positionals[0];
+  if (!Number.isInteger(args.port) || args.port < 0 || args.port > 65535) {
+    throw new Error('--port must be between 0 and 65535.');
+  }
+  if (!Number.isSafeInteger(args.maxStateBytes) || args.maxStateBytes < 1) {
+    throw new Error('--max-state-bytes must be a positive integer.');
+  }
+  return args;
+}
+
+async function main() {
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`[review-service] ${error.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (args.help) {
+    console.log(
+      'Usage: node scripts/review-service.mjs <state.json> [--port N] [--max-state-bytes N] [--language zh-CN|en] [--conversation-authorization <file>]',
+    );
+    return;
+  }
+
+  let service;
+  try {
+    service = await startReviewService(args.statePath, {
+      port: args.port,
+      maxStateBytes: args.maxStateBytes,
+      language: args.language,
+      conversationAuthorization: args.conversationAuthorization,
+    });
+  } catch (error) {
+    console.error(
+      `[review-service] ${error?.code ?? 'startup_failed'}: ${error?.message ?? 'startup failed'}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Review service: ${service.url}`);
+  console.log(
+    `State limit: ${args.maxStateBytes} bytes; language: ${args.language}; loopback only.`,
+  );
+
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`[review-service] ${signal}: closing`);
+    try {
+      const result = await service.close();
+      if (!result.storeClosed && result.storeError) {
+        console.error(`[review-service] store close: ${result.storeError}`);
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      console.error(`[review-service] close failed: ${error?.code ?? 'close_failed'}`);
+      process.exitCode = 1;
+    }
+    process.exit(process.exitCode ?? 0);
+  };
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGBREAK', () => void shutdown('SIGBREAK'));
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}

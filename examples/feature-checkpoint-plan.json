@@ -1,0 +1,73 @@
+{
+  "projectId": "project:feature-resume-synthetic",
+  "operationId": "feature-checkpoint-example-append",
+  "expectedStateVersion": 2,
+  "expectedDigest": "sha256:b8f2222832e9c68214f146544c38b963e6038e667fd4731387b0a7dea45e27b1",
+  "authorizationRef": "Synthetic example authorization; not a product approval.",
+  "nodeId": "capability:progress-resume",
+  "supersedes": "checkpoint:00000000-0000-4000-8000-000000000001",
+  "source": "agent_organized",
+  "sourceRefs": [
+    "synthetic plan fixture"
+  ],
+  "summary": "Append a second synthetic checkpoint to the example state.",
+  "workDone": [
+    {
+      "statement": "Synthetic work item; it does not claim any product behavior.",
+      "basisRefs": [
+        {
+          "collection": "node",
+          "id": "impl:checkpoint-cli"
+        }
+      ]
+    }
+  ],
+  "stopPoint": "Synthetic stop point; not an execution position.",
+  "remaining": [
+    {
+      "category": "verification",
+      "responsibility": "agent",
+      "statement": "Synthetic remaining item; no execution happened.",
+      "basisRefs": [
+        {
+          "collection": "evidence",
+          "id": "evidence:checkpoint-tests"
+        }
+      ]
+    }
+  ],
+  "nextActions": [
+    {
+      "statement": "Synthetic next action; it grants no authorization.",
+      "actor": "agent",
+      "category": "verify",
+      "preconditions": [
+        "Synthetic precondition"
+      ],
+      "authorizationRequired": [
+        "test_execution"
+      ]
+    }
+  ],
+  "nextActionsStatus": "recorded",
+  "basis": {
+    "refs": [
+      {
+        "collection": "intentClaim",
+        "id": "claim:resume:v1"
+      },
+      {
+        "collection": "roadmapItem",
+        "id": "roadmap:progress-resume"
+      }
+    ],
+    "sourceSnapshots": [
+      {
+        "path": "scripts/feature-progress.mjs",
+        "digest": null,
+        "revision": "synthetic-revision",
+        "observedAt": "2026-01-01T00:00:00Z"
+      }
+    ]
+  }
+}

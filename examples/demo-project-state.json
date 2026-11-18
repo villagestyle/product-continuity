@@ -1,0 +1,130 @@
+{
+  "schemaVersion": "0.1",
+  "stateVersion": 1,
+  "project": {
+    "id": "project:sample-shop",
+    "name": "Sample Shop",
+    "roots": ["apps/storefront"],
+    "scopeDescription": "Illustrative customer storefront; no real repository data"
+  },
+  "activeBaselineId": "baseline:demo-1",
+  "baselines": [
+    {
+      "id": "baseline:demo-1",
+      "revision": {
+        "commit": "demo-revision",
+        "branch": "example",
+        "worktree": "clean",
+        "label": "Synthetic renderer example"
+      },
+      "scope": {
+        "description": "Public storefront product browsing",
+        "includedPaths": ["apps/storefront/routes/product-detail.ts"],
+        "excludedPaths": [],
+        "coverageNote": "Synthetic data for exercising the local viewer only"
+      },
+      "createdAt": "2026-11-10T00:00:00Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "goal:easy-shopping",
+      "kind": "product_goal",
+      "label": "Make product discovery easy",
+      "description": "Illustrative product goal for the sample storefront.",
+      "status": "candidate",
+      "evidenceIds": ["evidence:overview"]
+    },
+    {
+      "id": "group:guest",
+      "kind": "user_group",
+      "label": "Guest shopper",
+      "description": "A visitor who has not signed in.",
+      "status": "candidate",
+      "evidenceIds": ["evidence:overview"]
+    },
+    {
+      "id": "task:view-public-product",
+      "kind": "user_task",
+      "label": "View a public product",
+      "description": "Open a public product detail before deciding whether to buy.",
+      "status": "candidate",
+      "evidenceIds": ["evidence:guide"]
+    },
+    {
+      "id": "commitment:guest-access",
+      "kind": "behavior_commitment",
+      "label": "Public details are viewable without sign-in",
+      "description": "Synthetic example: no product decision has been recorded.",
+      "status": "candidate",
+      "evidenceIds": ["evidence:guide"]
+    },
+    {
+      "id": "capability:product-details",
+      "kind": "capability",
+      "label": "Product detail page",
+      "description": "Show public product information.",
+      "status": "candidate",
+      "evidenceIds": ["evidence:route"]
+    },
+    {
+      "id": "impl:product-route",
+      "kind": "implementation",
+      "label": "Product detail route",
+      "description": "Illustrative source location; it is not present in this package.",
+      "status": "observed",
+      "conditions": ["Example evidence only; no runtime claim."],
+      "evidenceIds": ["evidence:route"]
+    },
+    {
+      "id": "verify:guest-test",
+      "kind": "verification",
+      "label": "Guest-access test",
+      "description": "The example contains a test definition, not a test execution.",
+      "status": "observed",
+      "evidenceIds": ["evidence:test"]
+    }
+  ],
+  "edges": [
+    { "id": "edge:goal-task", "from": "goal:easy-shopping", "kind": "contains", "to": "task:view-public-product" },
+    { "id": "edge:task-commitment", "from": "task:view-public-product", "kind": "contains", "to": "commitment:guest-access" },
+    { "id": "edge:commitment-capability", "from": "commitment:guest-access", "kind": "constrains", "to": "capability:product-details" },
+    { "id": "edge:task-group", "from": "task:view-public-product", "kind": "serves", "to": "group:guest" },
+    { "id": "edge:commitment-implementation", "from": "commitment:guest-access", "kind": "implemented_by", "to": "impl:product-route" },
+    { "id": "edge:commitment-test", "from": "commitment:guest-access", "kind": "verified_by", "to": "verify:guest-test" }
+  ],
+  "evidence": [
+    { "id": "evidence:overview", "kind": "product_document", "claim": "Synthetic overview describes easier product discovery.", "revision": "demo-revision", "path": "docs/product-overview.md", "locator": "Product goal", "validation": "not_applicable" },
+    { "id": "evidence:guide", "kind": "product_document", "claim": "Synthetic guide describes public product browsing.", "revision": "demo-revision", "path": "docs/customer-guide.md", "locator": "Browse products", "validation": "not_applicable" },
+    { "id": "evidence:route", "kind": "implementation", "claim": "Synthetic route reference used to illustrate evidence drilldown.", "revision": "demo-revision", "path": "apps/storefront/routes/product-detail.ts", "locator": "GET /products/:id", "validation": "not_applicable" },
+    { "id": "evidence:test", "kind": "test_definition", "claim": "Synthetic test definition asserts guest access; it was not run.", "revision": "demo-revision", "path": "apps/storefront/routes/product-detail.test.ts", "locator": "guest can view public product", "validation": "defined_only" }
+  ],
+  "decisions": [],
+  "checks": [
+    {
+      "id": "check:demo-001",
+      "createdAt": "2026-11-10T00:00:00Z",
+      "baselineId": "baseline:demo-1",
+      "base": { "commit": "demo-revision", "label": "Example base" },
+      "head": { "commit": "demo-revision-2", "label": "Example head" },
+      "taskIntent": { "status": "not_provided" },
+      "scope": {
+        "description": "Illustrative product detail route review",
+        "includedPaths": ["apps/storefront/routes/product-detail.ts"],
+        "excludedPaths": [],
+        "coverageNote": "Synthetic example only; no source repository was inspected"
+      },
+      "findings": [
+        {
+          "id": "finding:demo-001",
+          "status": "insufficient_evidence",
+          "summary": "The test is defined but no execution result was supplied, so guest access is not behavior-verified.",
+          "affectedNodeIds": ["commitment:guest-access", "verify:guest-test"],
+          "decisionIds": [],
+          "evidenceIds": ["evidence:test"],
+          "nextAction": "Run the focused guest-access test against the reviewed revision."
+        }
+      ]
+    }
+  ]
+}

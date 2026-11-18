@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "0.1",
+  "stateVersion": 1,
+  "project": {
+    "id": "project:shared-legacy",
+    "name": "Shared Legacy Decision",
+    "roots": [
+      "."
+    ],
+    "scopeDescription": "Synthetic 0.1 fixture"
+  },
+  "activeBaselineId": "baseline:shared",
+  "baselines": [
+    {
+      "id": "baseline:shared",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Synthetic 0.1 fixture"
+      },
+      "scope": {
+        "description": "Synthetic",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "No source inspected"
+      },
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "goal:shared",
+      "kind": "product_goal",
+      "label": "Shared approved goal",
+      "description": "Goal bound to the shared legacy decision.",
+      "status": "confirmed",
+      "conditions": [
+        "Legacy condition A"
+      ],
+      "decisionId": "decision:shared",
+      "evidenceIds": [
+        "evidence:shared-1"
+      ]
+    },
+    {
+      "id": "commitment:shared",
+      "kind": "behavior_commitment",
+      "label": "Shared approved commitment",
+      "description": "Commitment bound to the shared legacy decision.",
+      "status": "confirmed",
+      "conditions": [
+        "Legacy condition B"
+      ],
+      "decisionId": "decision:shared",
+      "evidenceIds": [
+        "evidence:shared-2"
+      ]
+    },
+    {
+      "id": "goal:retired",
+      "kind": "product_goal",
+      "label": "Retired goal",
+      "description": "Already retired in 0.1.",
+      "status": "retired",
+      "conditions": [
+        "Retired condition"
+      ],
+      "evidenceIds": [
+        "evidence:shared-1"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:shared",
+      "from": "goal:shared",
+      "kind": "contains",
+      "to": "commitment:shared"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "evidence:shared-1",
+      "kind": "user_statement",
+      "claim": "Synthetic user statement for the goal.",
+      "validation": "not_applicable"
+    },
+    {
+      "id": "evidence:shared-2",
+      "kind": "user_statement",
+      "claim": "Synthetic user statement for the commitment.",
+      "validation": "not_applicable"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "decision:shared",
+      "statement": "Approve both shared intentions",
+      "status": "confirmed",
+      "applicability": "Both legacy nodes",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "confirmedAt": "2026-01-01T00:00:00Z",
+      "confirmedBy": "local-user",
+      "evidenceIds": [
+        "evidence:shared-1",
+        "evidence:shared-2"
+      ]
+    }
+  ],
+  "checks": []
+}

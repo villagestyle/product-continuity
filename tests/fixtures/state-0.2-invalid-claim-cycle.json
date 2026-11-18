@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "0.2",
+  "stateVersion": 1,
+  "project": {
+    "id": "project:cycle",
+    "name": "Cycle Fixture",
+    "roots": [
+      "."
+    ],
+    "scopeDescription": "Invalid cycle fixture"
+  },
+  "activeBaselineId": "baseline:cycle",
+  "baselines": [
+    {
+      "id": "baseline:cycle",
+      "revision": {
+        "worktree": "unknown",
+        "label": "Cycle"
+      },
+      "scope": {
+        "description": "Cycle",
+        "includedPaths": [],
+        "excludedPaths": [],
+        "coverageNote": "Synthetic only"
+      },
+      "createdAt": "2026-11-11T00:00:00.000Z"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "capability:cycle",
+      "kind": "capability",
+      "label": "Cycle capability",
+      "status": "candidate",
+      "evidenceIds": []
+    }
+  ],
+  "edges": [],
+  "evidence": [],
+  "decisions": [],
+  "intentClaims": [
+    {
+      "id": "claim:cycle:a",
+      "nodeId": "capability:cycle",
+      "statement": "Cycle A",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "superseded",
+      "origin": "onboarding",
+      "createdAt": "2026-11-11T00:01:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:cycle:b"
+      ],
+      "supersededByClaimIds": [
+        "claim:cycle:b"
+      ]
+    },
+    {
+      "id": "claim:cycle:b",
+      "nodeId": "capability:cycle",
+      "statement": "Cycle B",
+      "scope": [],
+      "conditions": [],
+      "exceptions": [],
+      "status": "superseded",
+      "origin": "onboarding",
+      "createdAt": "2026-11-11T00:01:00.000Z",
+      "createdByReviewId": null,
+      "assessment": {
+        "disposition": "unreviewed",
+        "contentDigest": null,
+        "reviewedLegacyContext": false,
+        "reviewId": null
+      },
+      "governingDecisionId": null,
+      "retiredByDecisionId": null,
+      "supersedesClaimIds": [
+        "claim:cycle:a"
+      ],
+      "supersededByClaimIds": [
+        "claim:cycle:a"
+      ]
+    }
+  ],
+  "proposals": [],
+  "reviews": [],
+  "checks": []
+}
