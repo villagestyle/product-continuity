@@ -318,6 +318,17 @@ node scripts/build-dist.mjs [--output <file>] [--manifest <file>] [--check] [--f
   当前意图目录、记录／进度面板和原编辑器暂时隐藏但不销毁，避免混用当前操作与历史数据。
   回到现在后原样恢复。历史读取中或失败时画布不显示旧的其它树冒充；快速拖动会取消前一
   次读取，迟到响应不能覆盖新选择。全屏内同样可回溯，并保留平移、缩放、折叠与小地图。
+- **版本差异** 默认比较所选版本与前一个可核验版本；最早版本与后一个比较。方向始终为
+  **较早版 → 较晚版**，不随前进／后退颠倒。缺口只展示两端净变化，不补造中间过程。
+  时间轴下方常驻摘要；卡片以文字、边框和颜色标注新增／修改，变化关系以线型和文字区分。
+  不在所选快照中的卡片以明确标注的**对比叠影**显示，不计入所选版本真实节点数。
+- 点击有变化的卡片或摘要，在右侧只读区域查看完整变更清单和逐字段前后值；支持搜索、
+  类型筛选、每页 20 项、**上一处／下一处**、相关卡片定位及**查看所选版本卡片**。
+  折叠分支显示含变化卡片数，定位会展开路径；**仅看变化**保留必要关联上下文。
+  关闭**图上标注**会去掉徽标、差异线和叠影，恢复所选完整快照的图形。
+  意图正文、状态、说明、证据链接、关系、规划和续接分别展示；证据增加不表示意图确认
+  或完成，停止／替代不是删除，折叠、筛选和本地布局移动也不算内容删除。
+  对比不覆盖评审草稿、不提交写请求；端点不可核验时清除差异，不展示旧结果冒充。
 
 - 画布标题栏的 **时间线** 按钮另外展开图谱内部的记录／进度底部面板，不是回溯开关。
   默认折叠，和画布共享固定工作区高度；展开不改变画布缩放、位置、选择或折叠，面板
@@ -620,6 +631,8 @@ node tests/distribution.test.mjs --full
 - `scripts/timeline-model.mjs`, `scripts/timeline-history.mjs`,
   `scripts/timeline-ui.mjs` - read-only event/progress projections, bounded backup
   verification, and the live page's timeline disclosure.
+- `scripts/snapshot-diff.mjs`, `scripts/version-diff-ui.mjs` - stable-ID saved-state
+  comparison and linked read-only graph/list/field-diff controls.
 - `scripts/migrate-state.mjs` - explicit migration CLI.
 - `scripts/review-service.mjs` - single local HTTP entry point.
 - `scripts/build-dist.mjs`, `scripts/dist-files.json` - auditable packaging.

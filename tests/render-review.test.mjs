@@ -136,6 +136,20 @@ test('graph time axis is always outside disclosure and current editor is retaine
   assert.match(source,/if \(historySelection\) throw new Error/);
 });
 
+test('version comparison embeds read-only helpers separately from the preserved editor', () => {
+  const html=render(),{source}=pageScript(html),body=html.slice(0,html.indexOf('<script nonce='));
+  assert.match(body,/id="version-diff-bar"[^>]*hidden/);
+  assert.match(body,/id="version-diff-panel"[^>]*aria-label="版本差异只读详情"[^>]*hidden/);
+  assert.match(source,/compareSnapshots: function compareSnapshots/);
+  assert.match(source,/initializeVersionDiff: function initializeVersionDiff/);
+  assert.match(source,/token!==sequence/);
+  assert.match(source,/body\.stateIdentity !== stateIdentity/);
+  assert.match(source,/asArray\(current\.state\.conversationCaptures\)/);
+  assert.doesNotMatch(source,/asArray\(state\.conversationCaptures\)\.find/);
+  const compare=source.slice(source.indexOf('initializeVersionDiff: function initializeVersionDiff'));
+  assert.doesNotMatch(compare,/method:\s*['"]POST['"]|\/api\/review|\/api\/submit|innerHTML/);
+});
+
 test('review page exposes all nine action entry points in the static directory', () => {
   const html = render();
   const body = html.slice(0, html.indexOf('<script nonce='));

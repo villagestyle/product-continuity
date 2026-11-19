@@ -21,7 +21,13 @@
 import { constants, promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { canonicalStringify, deriveNodeIntentSummary } from './intent-model.mjs';
-import { deriveFeatureProgress, selectFeatureContext } from './feature-progress.mjs';
+import { deriveFeatureProgress, selectFeatureContext, WORK_LIMITS } from './feature-progress.mjs';
+// The per-work model (`currentWork`, `deriveCurrentWorkIndex`,
+// `deriveWorkChanges`) is owned by `feature-progress.mjs` (current-work contract
+// §14, step 2). It is resolved as a namespace so this read layer keeps working
+// while that additive export is being landed in parallel, and so a test can
+// inject a synthetic model instead of inventing rules here.
+import * as featureProgressModel from './feature-progress.mjs';
 import { canonicalizeStatePath, sha256Bytes, validateFullState } from './state-store.mjs';
 
 export const MCP_TOOL_NAMES = Object.freeze(['project_get', 'context_get', 'map_query']);
@@ -42,6 +48,12 @@ export const DEFAULT_MCP_LIMITS = Object.freeze({
   maxFeatureCheckpoints: 200,
   maxCheckpointBasisRecords: 300,
   maxCheckpointSourceSnapshots: 20,
+  // Work caps come from the per-work model so the two layers cannot drift
+  // (current-work contract §8.3, §12).
+  maxWorkIndexEntries: WORK_LIMITS.maxWorkIndexEntries,
+  maxWorksPerFeatureRead: WORK_LIMITS.maxWorksPerFeatureRead,
+  maxWorkHistoryDefault: WORK_LIMITS.maxWorkHistoryDefault,
+  maxWorkHistoryPage: WORK_LIMITS.maxWorkHistoryPage,
 });
 
 const LIMIT_KEYS = Object.freeze(Object.keys(DEFAULT_MCP_LIMITS));
@@ -51,6 +63,9 @@ const MAX_PROJECT_ID_LENGTH = 200;
 const MAX_STATE_PATH_LENGTH = 4096;
 const MAX_TASK_LENGTH = 2000;
 const MAX_FILE_PATH_LENGTH = 1024;
+const MAX_WORK_ID_LENGTH = 160;
+const MAX_WORK_TITLE_LENGTH = 200;
+const MAX_WORK_CHANGES = 40;
 const WINDOWS_DRIVE_PATTERN = /^[A-Za-z]:/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
 
@@ -329,7 +344,9 @@ export function normaliseToolArguments(tool, args) {
   const allowed =
     tool === 'project_get'
       ? ['projectId']
-      : ['projectId', 'nodeIds', 'roadmapItemIds', 'files', 'task'];
+      : tool === 'context_get'
+        ? ['projectId', 'nodeIds', 'roadmapItemIds', 'files', 'workIds', 'workHistoryPage', 'workHistoryPageSize', 'includeFeatureChain', 'task']
+        : ['projectId', 'nodeIds', 'roadmapItemIds', 'files', 'task'];
   const unknown = Object.keys(args).filter((key) => !allowed.includes(key));
   if (unknown.length > 0) {
     throw new McpContextError(
@@ -349,18 +366,72 @@ export function normaliseToolArguments(tool, args) {
   result.files = normaliseFileList(args.files);
   if (args.task !== undefined) result.task = normaliseTask(args.task);
 
-  if (
-    tool === 'context_get' &&
-    result.nodeIds.length === 0 &&
-    result.roadmapItemIds.length === 0 &&
-    result.files.length === 0
-  ) {
+  if (tool === 'context_get') {
+    result.workIds = normaliseWorkIdList(args.workIds);
+    const paging = normaliseWorkHistoryPaging(args, result.workIds);
+    if (paging) {
+      result.workHistoryPage = paging.page;
+      result.workHistoryPageSize = paging.pageSize;
+    }
+    if (args.includeFeatureChain !== undefined) {
+      if (typeof args.includeFeatureChain !== 'boolean') {
+        throw new McpContextError('invalid_arguments', 'includeFeatureChain must be a boolean.');
+      }
+      result.includeFeatureChain = args.includeFeatureChain;
+    }
+  }
+
+  const hasExplicitSelector =
+    result.nodeIds.length > 0 ||
+    result.roadmapItemIds.length > 0 ||
+    result.files.length > 0 ||
+    (result.workIds?.length ?? 0) > 0;
+  if (tool === 'context_get' && !hasExplicitSelector) {
     throw new McpContextError(
       'explicit_selector_required',
-      'context_get requires explicit nodeIds, roadmapItemIds or exact project-relative files; task text is only a purpose description and is not a semantic search.',
+      'context_get requires explicit nodeIds, roadmapItemIds, exact project-relative files or workIds; task text is only a purpose description and is not a semantic search.',
     );
   }
   return result;
+}
+
+// A work id is an explicit saved identity, never a label or a fuzzy match.
+function normaliseWorkIdList(value) {
+  const ids = normaliseIdList(value, 'workIds');
+  for (const id of ids) {
+    if (id.length > MAX_WORK_ID_LENGTH) {
+      throw new McpContextError('invalid_arguments', 'A workId is longer than the contract allows.', {
+        argument: 'workIds',
+        limit: MAX_WORK_ID_LENGTH,
+      });
+    }
+  }
+  return ids;
+}
+
+// History paging is only meaningful for a selected work: paging the whole map is
+// refused rather than silently reinterpreted.
+function normaliseWorkHistoryPaging(args, workIds) {
+  const hasPage = args.workHistoryPage !== undefined;
+  const hasSize = args.workHistoryPageSize !== undefined;
+  if (!hasPage && !hasSize) return null;
+  if (workIds.length === 0) {
+    throw new McpContextError(
+      'invalid_arguments',
+      'workHistoryPage and workHistoryPageSize require explicit workIds; they never page the whole map.',
+    );
+  }
+  const page = hasPage ? args.workHistoryPage : 0;
+  if (!Number.isInteger(page) || page < 0) {
+    throw new McpContextError('invalid_arguments', 'workHistoryPage must be a non-negative integer.');
+  }
+  const pageSize = hasSize ? args.workHistoryPageSize : DEFAULT_MCP_LIMITS.maxWorkHistoryDefault;
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > DEFAULT_MCP_LIMITS.maxWorkHistoryPage) {
+    throw new McpContextError('invalid_arguments', 'workHistoryPageSize is outside the allowed page size.', {
+      limit: DEFAULT_MCP_LIMITS.maxWorkHistoryPage,
+    });
+  }
+  return { page, pageSize };
 }
 
 /**
@@ -860,8 +931,13 @@ function resolveBasisRecords(refs, featureNodeId, index) {
   });
 }
 
-function contextFeatureProgress(state, scope, collections, limits, featureNodeIds) {
+function contextFeatureProgress(state, scope, collections, limits, featureNodeIds, options = {}) {
   if (state?.schemaVersion !== '0.2') return [];
+  // Current-work contract §12.3: with `workIds`, the whole Feature chain is not
+  // returned by default because the caller asked for one work's revisions. The
+  // records are not "truncated" then — they are deliberately omitted, so the
+  // omission is stated explicitly and the chain-length check is skipped.
+  const includeChain = options.includeChain !== false;
   const nodeIds = featureNodeIds;
   if (nodeIds.length === 0) return [];
   const views = nodeIds.map((nodeId) =>
@@ -871,7 +947,7 @@ function contextFeatureProgress(state, scope, collections, limits, featureNodeId
     (total, view) => total + (Number.isInteger(view.checkpoints.count) ? view.checkpoints.count : 0),
     0,
   );
-  if (totalCheckpoints > limits.maxFeatureCheckpoints) {
+  if (includeChain && totalCheckpoints > limits.maxFeatureCheckpoints) {
     throw new McpContextError(
       'result_too_large',
       'The selected Feature checkpoint chains exceed the configured record limit; narrow nodeIds and retry.',
@@ -900,7 +976,7 @@ function contextFeatureProgress(state, scope, collections, limits, featureNodeId
   const index = basisCollectionIndex(collections);
   return views.map((view, position) => {
     const fullItem = view.roadmap.item ? roadmapItemById(collections, view.roadmap.item.id) : null;
-    const records = view.checkpoints.ordered.map((record) => clone(record));
+    const records = includeChain ? view.checkpoints.ordered.map((record) => clone(record)) : [];
     return {
       feature: view.feature
         ? { nodeId: view.feature.id, label: view.feature.label, status: view.feature.status }
@@ -916,7 +992,13 @@ function contextFeatureProgress(state, scope, collections, limits, featureNodeId
         tailId: view.checkpoints.tailId,
         returned: records.length,
         truncated: false,
+        // Only meaningful when the chain was deliberately skipped for a work
+        // read; it is never a silent drop.
+        omitted: includeChain ? 0 : view.checkpoints.count,
         records,
+        note: includeChain
+          ? null
+          : 'Feature chain records are omitted because workIds narrowed this read to per-work history; pass includeFeatureChain: true (or omit workIds) to read the whole chain.',
       },
       latest: view.latest ? clone(view.latest) : null,
       // Saved delivery-stage reading; a projection of the saved record, not a
@@ -938,6 +1020,318 @@ function contextFeatureProgress(state, scope, collections, limits, featureNodeId
       notes: [...asArray(view.notes)],
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Current work (本轮在做) read surface.
+//
+// The rules that rebuild a per-work current state, its revision predecessors and
+// its change classes belong to `feature-progress.mjs` (current-work contract
+// §6, §8, §14). This module only narrows and bounds them for the three existing
+// read-only tools; it never invents a work, a layer link or a confirmation, and
+// it exposes no write path.
+// ---------------------------------------------------------------------------
+
+const WORK_INDEX_NOTE = 'currentWorkIndex is a bounded locator for saved work statements. A saved work is not a review, product decision, delivery stage, completion metric or execution authorization.';
+const WORK_READ_NOTE = 'A work record is a complete snapshot of one round; older revisions exist only in that work history. The Feature chain tail is never "the current work".';
+const WORK_UPPER_NOTE = 'Upper layers are saved observations with their own origin. A current projection is not re-derived here, so an unchanged layer may still show current: null; the recorded change classes remain authoritative.';
+
+/**
+ * Resolve the per-work model. The default is the `feature-progress.mjs`
+ * namespace; `options.currentWorkApi` lets a test inject a synthetic model
+ * instead of duplicating those rules in this file.
+ */
+export function resolveCurrentWorkApi(override) {
+  const api = isRecord(override) ? override : featureProgressModel;
+  const pick = (name) => (typeof api?.[name] === 'function' ? api[name].bind(api) : null);
+  return {
+    injected: isRecord(override),
+    currentWork: pick('currentWork'),
+    deriveCurrentWorkIndex: pick('deriveCurrentWorkIndex'),
+    deriveWorkChanges: pick('deriveWorkChanges'),
+  };
+}
+
+function workIndexSupported(api) {
+  return Boolean(api.currentWork && api.deriveCurrentWorkIndex);
+}
+
+function workChainRecords(state, workId) {
+  // Both this filter and the model's own grouping walk `state.featureCheckpoints`
+  // in stored order; a valid state is append-only and its `supersedes` links
+  // agree with that order.
+  return asArray(state?.featureCheckpoints).filter(
+    (record) => isRecord(record) && record.workContext?.workId === workId,
+  );
+}
+
+function normaliseWorkIndexEntry(entry) {
+  return {
+    workId: typeof entry.workId === 'string' ? entry.workId : '',
+    nodeId: typeof entry.nodeId === 'string' ? entry.nodeId : '',
+    featureLabel: typeof entry.featureLabel === 'string' ? entry.featureLabel : '',
+    workTitle: typeof entry.workTitle === 'string' ? entry.workTitle.slice(0, MAX_WORK_TITLE_LENGTH) : '',
+    lifecycle: ['active', 'paused', 'ended'].includes(entry.lifecycle) ? entry.lifecycle : 'ended',
+    updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
+    currentRecordId: typeof entry.currentRecordId === 'string' ? entry.currentRecordId : '',
+    selectionKind: typeof entry.selectionKind === 'string' ? entry.selectionKind : '',
+    basisReview: typeof entry.basisReview === 'string' ? entry.basisReview : (typeof entry.contextStatus === 'string' ? entry.contextStatus : 'no_checkpoint'),
+    endsReason: typeof entry.endsReason === 'string' ? entry.endsReason : null,
+  };
+}
+
+/**
+ * `project_get.currentWorkIndex`: bounded, deterministic-order project index.
+ *
+ * Ordering and the two caps belong to `deriveCurrentWorkIndex`
+ * (§12.1: lifecycle, then `updatedAt` descending, then `workId`; the per-Feature
+ * cap applies before the project cap). This function only bounds defensively and
+ * normalises the entry shape; it never re-orders or re-derives.
+ */
+function projectCurrentWorkIndex(state, limits, api) {
+  const limit = Math.max(1, Math.min(limits.maxWorkIndexEntries, limits.maxNodes));
+  const perFeature = Math.max(1, limits.maxWorksPerFeatureRead);
+  if (state?.schemaVersion !== '0.2') {
+    return {
+      supported: false,
+      modelAvailable: workIndexSupported(api),
+      collectionPresent: false,
+      // A 0.1 state has no work records at all; that is a schema fact, not an
+      // index truncation.
+      truncated: false,
+      omitted: 0,
+      limit,
+      entries: [],
+      notes: [
+        `${WORK_INDEX_NOTE} This state is schema 0.1: work records do not exist until an explicit migration.`,
+      ],
+    };
+  }
+  if (!workIndexSupported(api)) {
+    return {
+      supported: false,
+      modelAvailable: false,
+      collectionPresent: false,
+      truncated: false,
+      omitted: 0,
+      limit,
+      entries: [],
+      notes: [
+        `${WORK_INDEX_NOTE} The per-work read model is not available in this build, so this empty index is not proof that no work was saved.`,
+      ],
+    };
+  }
+  const view = api.deriveCurrentWorkIndex(state, {
+    maxWorkIndexEntries: limit,
+    maxNodes: limits.maxNodes,
+    maxWorksPerFeature: perFeature,
+  });
+  const raw = asArray(view?.entries);
+  const entries = raw.slice(0, limit).map(normaliseWorkIndexEntry);
+  const omitted = (Number.isInteger(view?.omitted) ? view.omitted : 0) + (raw.length - entries.length);
+  return {
+    supported: view?.supported !== false,
+    modelAvailable: true,
+    collectionPresent: typeof view?.collectionPresent === 'boolean'
+      ? view.collectionPresent
+      : raw.length > 0,
+    truncated: omitted > 0,
+    omitted,
+    limit,
+    entries,
+    notes: [WORK_INDEX_NOTE, ...asArray(view?.notes).filter((note) => typeof note === 'string')],
+  };
+}
+
+// A resolved upper layer is narrowed to the contract's §12.2 `ResolvedLayer`:
+// no raw content projection is forwarded, and `current` is whatever the model
+// actually resolved instead of an invented projection.
+function narrowResolvedLayer(resolved) {
+  if (!isRecord(resolved) || typeof resolved.state !== 'string') return { state: 'not_recorded' };
+  if (resolved.state === 'not_recorded') return { state: 'not_recorded' };
+  if (resolved.state === 'gap') {
+    return { state: 'gap', reason: typeof resolved.reason === 'string' ? resolved.reason : null };
+  }
+  if (resolved.state === 'unavailable') {
+    return { state: 'unavailable', ref: isRecord(resolved.ref) ? clone(resolved.ref) : null };
+  }
+  if (resolved.state !== 'found') return { state: 'not_recorded' };
+  const observed = isRecord(resolved.observed) ? resolved.observed : null;
+  const current = isRecord(resolved.current)
+    ? {
+        label: typeof resolved.current.label === 'string' ? resolved.current.label : null,
+        kind: typeof resolved.current.kind === 'string' ? resolved.current.kind : null,
+        digest: typeof resolved.current.digest === 'string' ? resolved.current.digest : null,
+        confirmation: isRecord(resolved.current.confirmation) ? clone(resolved.current.confirmation) : null,
+      }
+    : null;
+  return {
+    state: 'found',
+    ref: isRecord(resolved.ref) ? clone(resolved.ref) : null,
+    origin: isRecord(resolved.origin) ? clone(resolved.origin) : null,
+    observed: observed
+      ? {
+          label: typeof observed.label === 'string' ? observed.label : null,
+          kind: typeof observed.kind === 'string' ? observed.kind : null,
+          digest: typeof observed.digest === 'string' ? observed.digest : null,
+          confirmation: isRecord(observed.confirmation) ? clone(observed.confirmation) : null,
+          snapshotAvailable: observed.snapshotAvailable === true,
+        }
+      : null,
+    current,
+    changed: {
+      content: typeof resolved.changed?.content === 'boolean' ? resolved.changed.content : null,
+      confirmation: typeof resolved.changed?.confirmation === 'boolean' ? resolved.changed.confirmation : null,
+    },
+  };
+}
+
+function narrowWorkChange(change) {
+  return {
+    class: typeof change.class === 'string' ? change.class : 'bookkeeping_changed',
+    layer: typeof change.layer === 'string' ? change.layer : 'adopted',
+    collection: typeof change.collection === 'string' ? change.collection : '',
+    id: typeof change.id === 'string' ? change.id : '',
+    label: typeof change.label === 'string' ? change.label : '',
+    fields: asArray(change.fields).filter((field) => typeof field === 'string'),
+    hasBothContents: change.hasBothContents === true,
+  };
+}
+
+function narrowAdoptedBasis(entry) {
+  return {
+    claimId: typeof entry.claimId === 'string' ? entry.claimId : '',
+    contentDigest: typeof entry.contentDigest === 'string' ? entry.contentDigest : null,
+    // 'not_adopted' is never produced here: these entries come from the current
+    // record's own `adoptedBasis`.
+    state: entry.state === 'unavailable' ? 'unavailable' : 'available',
+    matches: typeof entry.matches === 'boolean' ? entry.matches : null,
+  };
+}
+
+function workHistoryPage(chain, page, pageSize) {
+  const total = chain.length;
+  const end = Math.max(0, total - page * pageSize);
+  const start = Math.max(0, end - pageSize);
+  const records = chain.slice(start, end).map((record) => clone(record));
+  const truncated = (page + 1) * pageSize < total;
+  return {
+    page,
+    pageSize,
+    total,
+    truncated,
+    nextPage: truncated ? page + 1 : null,
+    records,
+  };
+}
+
+function composeCurrentWorkEntry(state, workId, view, api, paging, options = {}) {
+  const digest = typeof options.digest === 'function' ? options.digest : featureDigest;
+  const chain = workChainRecords(state, workId);
+  const content = isRecord(view?.content) ? view.content : {};
+  const changesView = typeof api.deriveWorkChanges === 'function'
+    ? api.deriveWorkChanges(state, workId, { digest })
+    : null;
+  const allChanges = asArray(changesView?.changes).filter(isRecord).map(narrowWorkChange);
+  const changes = allChanges.slice(0, MAX_WORK_CHANGES);
+  const upper = isRecord(changesView?.upper) ? changesView.upper : {};
+  const selection = isRecord(content.selection) ? clone(content.selection) : null;
+  const contextStatus = typeof changesView?.contextStatus === 'string'
+    ? changesView.contextStatus
+    : (typeof view?.contextStatus === 'string' ? view.contextStatus : 'no_checkpoint');
+  const notes = [WORK_READ_NOTE, WORK_UPPER_NOTE];
+  if (changesView?.contentComparable === false) {
+    notes.push('No digest function was injected, so upper-layer content changes are reported as unverified rather than guessed.');
+  }
+  if (changesView?.supportDigestSource === 'missing') {
+    notes.push('This work record has no saved implementation/verification support digests; same-id support content is not comparable and is not treated as unchanged.');
+  } else if (changesView?.supportDigestSource === 'partial') {
+    notes.push('Saved implementation/verification support digests are incomplete; the listed missing ids are not treated as unchanged.');
+  } else if (changesView?.supportDigestSource === 'unverified') {
+    notes.push('This record has saved implementation/verification digests, but this read path did not inject a digest function to compare current content.');
+  }
+  if (selection?.kind === 'agent_proposed_unselected') {
+    notes.push('This selection is an agent proposal that was not adopted; it is stored, displayed separately and is not the working scope.');
+  }
+  return {
+    workId,
+    nodeId: typeof view?.nodeId === 'string' ? view.nodeId : null,
+    workTitle: typeof view?.workTitle === 'string' ? view.workTitle.slice(0, MAX_WORK_TITLE_LENGTH) : '',
+    operation: typeof view?.operation === 'string' ? view.operation : null,
+    lifecycle: isRecord(view?.lifecycle) ? clone(view.lifecycle) : null,
+    objective: typeof content.objective === 'string' ? content.objective : null,
+    scope: asArray(content.scope).filter(isRecord).map((item) => clone(item)),
+    exclusions: asArray(content.exclusions).filter(isRecord).map((item) => clone(item)),
+    acceptanceCriteria: asArray(content.acceptanceCriteria).filter(isRecord).map((item) => clone(item)),
+    selection,
+    // Saved observations plus whatever the model could actually resolve; a
+    // layer this revision did not record is `not_recorded`, never "absent".
+    upper: {
+      productGoal: narrowResolvedLayer(upper.productGoal),
+      stage: narrowResolvedLayer(upper.stage),
+      openUserPaths: asArray(upper.openUserPaths).map(narrowResolvedLayer),
+    },
+    resume: isRecord(content.resume) ? clone(content.resume) : null,
+    basis: {
+      adopted: asArray(changesView?.adopted).filter(isRecord).map(narrowAdoptedBasis),
+      contextStatus,
+      contextDifferences: asArray(changesView?.contextDifferences).filter(isRecord).map((entry) => clone(entry)),
+      changes,
+      changesTruncated: allChanges.length > changes.length || changesView?.changesTruncated === true,
+      supportContentComparable: changesView?.supportContentComparable === true,
+      supportDigestSource: ['persisted', 'partial', 'missing', 'unverified'].includes(changesView?.supportDigestSource)
+        ? changesView.supportDigestSource : null,
+      supportDigestMissing: asArray(changesView?.supportDigestMissing)
+        .filter((id) => typeof id === 'string').slice(0, MAX_WORK_CHANGES),
+      // The fifth class never enters `changes`; it is only counted (§8.2).
+      bookkeepingCount: Number.isInteger(changesView?.bookkeepingCount) ? changesView.bookkeepingCount : 0,
+    },
+    currentRecordId: typeof view?.currentRecordId === 'string' ? view.currentRecordId : null,
+    previousRecordId: typeof view?.previousRecordId === 'string' ? view.previousRecordId : null,
+    revisionCount: Number.isInteger(view?.revisionCount) ? view.revisionCount : chain.length,
+    history: workHistoryPage(chain, paging.page, paging.pageSize),
+    notes,
+  };
+}
+
+/**
+ * `context_get.currentWork`: one complete read per explicitly requested workId,
+ * in request order. Unknown ids fail the request instead of being dropped.
+ */
+export function selectCurrentWorkContext(state, args, options = {}) {
+  const api = resolveCurrentWorkApi(options.currentWorkApi);
+  const limits = normaliseLimits(options.limits);
+  const workIds = asArray(args?.workIds).filter((id) => typeof id === 'string');
+  if (workIds.length === 0) return [];
+  if (!api.currentWork) {
+    throw new McpContextError(
+      'current_work_unavailable',
+      'The per-work read model is not available in this build; this is not proof that no work was saved.',
+      { reason: 'work_model_missing' },
+    );
+  }
+  const paging = {
+    page: Number.isInteger(args?.workHistoryPage) ? args.workHistoryPage : 0,
+    pageSize: Number.isInteger(args?.workHistoryPageSize)
+      ? args.workHistoryPageSize
+      : Math.min(limits.maxWorkHistoryDefault, limits.maxWorkHistoryPage),
+  };
+  const missing = [];
+  const entries = [];
+  for (const workId of workIds) {
+    const view = api.currentWork(state, workId);
+    if (!isRecord(view) || view.found === false) {
+      missing.push(workId);
+      continue;
+    }
+    entries.push(composeCurrentWorkEntry(state, workId, view, api, paging, options));
+  }
+  if (missing.length > 0) {
+    throw new McpContextError('work_not_found', 'A requested workId is not present in this saved state.', {
+      workIds: missing.slice(0, MAX_SELECTORS),
+    });
+  }
+  return entries;
 }
 
 function stateView(snapshot) {
@@ -1470,6 +1864,14 @@ function selectorView(args) {
     nodeIds: [...(args.nodeIds ?? [])],
     roadmapItemIds: [...(args.roadmapItemIds ?? [])],
     files: [...(args.files ?? [])],
+    ...((args.workIds?.length ?? 0) === 0
+      ? {}
+      : {
+          workIds: [...args.workIds],
+          workHistoryPage: args.workHistoryPage ?? 0,
+          workHistoryPageSize: args.workHistoryPageSize ?? DEFAULT_MCP_LIMITS.maxWorkHistoryDefault,
+          includeFeatureChain: args.includeFeatureChain === true,
+        }),
     task:
       typeof args.task === 'string'
         ? {
@@ -1560,6 +1962,11 @@ export function buildProjectGet(state, snapshot, rawArgs, options = {}) {
     counts: countsOf(collections),
     roadmap: roadmapSummaryOf(state, collections),
     featureProgress: projectFeatureProgress(state, limits),
+    currentWorkIndex: projectCurrentWorkIndex(
+      state,
+      limits,
+      resolveCurrentWorkApi(options.currentWorkApi),
+    ),
     migration: stateMigrationView(state),
     readOnly: true,
     serverMode: writeMode ? 'maintenance_opt_in' : 'read_only',
@@ -1637,9 +2044,24 @@ export function buildContextGet(state, snapshot, rawArgs, options = {}) {
   }
   const limits = normaliseLimits(options.limits);
   const collections = collectionsOf(state);
-  const scope = selectScope(state, collections, args, limits, { includeAllWhenEmpty: false });
+  const workIds = asArray(args.workIds);
+  // Read the requested works before assembling anything else: an unknown
+  // workId must fail the whole call instead of returning a partial context that
+  // looks complete.
+  const currentWork = workIds.length > 0
+    ? selectCurrentWorkContext(state, args, { limits, currentWorkApi: options.currentWorkApi })
+    : [];
+  // The work's owning capability is the Feature to read. It is a read seed, not
+  // a caller-stated selector, so `selectors` still echoes the request verbatim.
+  const workNodeIds = currentWork
+    .map((entry) => entry.nodeId)
+    .filter((nodeId) => typeof nodeId === 'string' && nodeId.length > 0);
+  const scopeArgs = workNodeIds.length > 0
+    ? { ...args, nodeIds: [...new Set([...asArray(args.nodeIds), ...workNodeIds])] }
+    : args;
+  const scope = selectScope(state, collections, scopeArgs, limits, { includeAllWhenEmpty: false });
   const base = buildBase(state, snapshot, collections, limits, scope, args, 'context_get', {writeMode: options.writeMode});
-  const featureNodeIds = selectedFeatureCapabilityIds(scope, collections, args);
+  const featureNodeIds = selectedFeatureCapabilityIds(scope, collections, scopeArgs);
   const reviewsById = byId(collections.reviews);
   return {
     ...base,
@@ -1656,7 +2078,10 @@ export function buildContextGet(state, snapshot, rawArgs, options = {}) {
     conversationCaptures: collections.conversationCaptures.filter((c) => c.items.some((item) => scope.selectedNodes.some((node) => node.id === item.nodeId))).map((c) => ({ ...clone(c), items: c.items.map((item, itemIndex) => ({ ...clone(item), itemIndex })).filter((item) => scope.selectedNodes.some((node) => node.id === item.nodeId)) })),
     roadmapDependencyItems: scope.dependencyItems.map(roadmapItemView),
     roadmap: roadmapSummaryOf(state, collections),
-    featureProgress: contextFeatureProgress(state, scope, collections, limits, featureNodeIds),
+    featureProgress: contextFeatureProgress(state, scope, collections, limits, featureNodeIds, {
+      includeChain: workIds.length === 0 || args.includeFeatureChain === true,
+    }),
+    currentWork,
     unresolvedEvidenceIds: [...scope.unresolvedEvidenceIds],
     returned: returnedCounts(scope, true),
     totals: countsOf(collections),
@@ -1665,6 +2090,12 @@ export function buildContextGet(state, snapshot, rawArgs, options = {}) {
     'All claims for the selected nodes are returned, including superseded, retired and dismissed history; no normative claim is silently omitted.',
     'roadmapDependencyItems are direct planning dependencies, not recursively expanded intent context; query their explicit item/node IDs before acting on them.',
     'featureProgress contains one complete context per explicitly selected capability seed; checkpoint chains are returned oldest-to-newest and basisRecords cover only the latest checkpoint (including delivery.basisRefs), with same-Feature checkpoint references resolved one hop; delivery is a saved-record reading projection, not acceptance or release authorization.',
+    ...(workIds.length > 0
+      ? [
+          'currentWork holds one complete snapshot per explicitly requested workId, in request order; its history page walks only older revisions of that work, so the current record and its adopted basis are always complete in this same response.',
+          'The owning capability of each requested work was added to the read scope so its Feature context is returned; it is a read seed, not a caller selector, and the Feature chain records are omitted unless includeFeatureChain is true.',
+        ]
+      : []),
     ],
   };
 }
@@ -1695,10 +2126,32 @@ export async function runTool(tool, binding, rawArgs, options = {}) {
   }
   const responseBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
   if (responseBytes > limits.maxResponseBytes) {
+    // Current-work contract §12.3 item 3: a work read says what to call next
+    // instead of dropping a Feature silently.
+    const workIds = asArray(args.workIds);
     throw new McpContextError(
       'result_too_large',
-      'The response exceeds the configured byte limit; narrow the explicit selectors.',
-      { responseBytes, maxResponseBytes: limits.maxResponseBytes },
+      workIds.length > 0
+        ? 'The response exceeds the configured byte limit even with workIds; retry each work separately with its history page.'
+        : 'The response exceeds the configured byte limit; narrow the explicit selectors.',
+      {
+        collection: 'responseBytes',
+        count: responseBytes,
+        limit: limits.maxResponseBytes,
+        responseBytes,
+        maxResponseBytes: limits.maxResponseBytes,
+        ...(workIds.length > 0
+          ? {
+              narrowed: false,
+              suggestedWorkIds: workIds.slice(0, MAX_SELECTORS),
+              retry: {
+                workIds: workIds.slice(0, MAX_SELECTORS),
+                workHistoryPage: 0,
+                workHistoryPageSize: Math.min(limits.maxWorkHistoryDefault, limits.maxWorkHistoryPage),
+              },
+            }
+          : {}),
+      },
     );
   }
   return result;
@@ -1746,11 +2199,39 @@ export function getToolDefinitions() {
         'Optional purpose description for the caller. It is not a semantic query and does not select records.',
     },
   };
+  const contextSelectorProperties = {
+    ...selectorProperties,
+    workIds: {
+      type: 'array',
+      items: { type: 'string', minLength: 1, maxLength: MAX_WORK_ID_LENGTH },
+      maxItems: MAX_SELECTORS,
+      uniqueItems: true,
+      description:
+        'Explicit saved work IDs (current work, 本轮在做). Each must resolve to an existing work record; an unknown ID fails with work_not_found. No label or fuzzy matching.',
+    },
+    workHistoryPage: {
+      type: 'integer',
+      minimum: 0,
+      description:
+        'Zero-based page over one work\'s older revisions. Requires workIds; paging the whole map is refused.',
+    },
+    workHistoryPageSize: {
+      type: 'integer',
+      minimum: 1,
+      maximum: DEFAULT_MCP_LIMITS.maxWorkHistoryPage,
+      description: `Records per work-history page, 1..${DEFAULT_MCP_LIMITS.maxWorkHistoryPage}; default ${DEFAULT_MCP_LIMITS.maxWorkHistoryDefault}. Requires workIds.`,
+    },
+    includeFeatureChain: {
+      type: 'boolean',
+      description:
+        'With workIds, the whole Feature checkpoint chain is omitted by default; set true to include it as well. Ignored without workIds.',
+    },
+  };
   return [
     {
       name: 'project_get',
       description:
-        'Read the bound project identity, active baseline, state version, file digest, record counts and a bounded Feature progress index (checkpoint IDs, stop points, planning references). Read-only; no source, workspace or network access.',
+        'Read the bound project identity, active baseline, state version, file digest, record counts, a bounded Feature progress index (checkpoint IDs, stop points, planning references) and a bounded current-work index (work IDs, titles, lifecycles). Read-only; no source, workspace or network access.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -1763,12 +2244,12 @@ export function getToolDefinitions() {
     {
       name: 'context_get',
       description:
-        'Read complete intent context for explicit nodeIds, roadmapItemIds or exact project-relative evidence files: full claim fields and history, source, decisions, proposals, evidence definitions/executions, coverage, and one complete Feature progress context per selected capability with its ordered checkpoints and bounded basis closure. Roadmap and checkpoints are context, not authorization.',
+        'Read complete intent context for explicit nodeIds, roadmapItemIds, exact project-relative evidence files or saved workIds: full claim fields and history, source, decisions, proposals, evidence definitions/executions, coverage, one complete Feature progress context per selected capability with its ordered checkpoints and bounded basis closure, and one complete snapshot per requested work with its older-revision history page. Roadmap, checkpoints and works are context, not authorization.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
         required: ['projectId'],
-        properties: selectorProperties,
+        properties: contextSelectorProperties,
       },
     },
     {

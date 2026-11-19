@@ -146,6 +146,10 @@ Input:
   nodeIds?: string[];
   roadmapItemIds?: string[];
   files?: string[];   // exact project-relative evidence paths
+  workIds?: string[]; // explicit saved work IDs (本轮在做); never a label match
+  workHistoryPage?: number;      // 0-based, requires workIds
+  workHistoryPageSize?: number;  // 1..50, requires workIds, default 20
+  includeFeatureChain?: boolean; // with workIds the Feature chain is omitted unless true
   task?: string;      // optional description only
 }
 ```
@@ -171,8 +175,9 @@ the explicitly selected scope:
   checkpoints or basis records exceed a configured count/byte limit, the whole
   request is rejected with `result_too_large`; it is never silently truncated.
 
-`context_get` requires at least one explicit `nodeIds`, `roadmapItemIds` or
-`files` selector; `task` alone is rejected as a semantic-search attempt.
+`context_get` requires at least one explicit `nodeIds`, `roadmapItemIds`,
+`files` or `workIds` selector; `task` alone is rejected as a semantic-search
+attempt.
 `files` is only a selector for stored evidence paths. An entry must match an
 existing project-relative evidence path exactly; it is not permission to read
 an arbitrary file. `task` may help the caller phrase the request, but this
@@ -190,6 +195,27 @@ discovering every relevant intent in an incomplete map.
 `roadmapDependencyItems` contains full planning records for direct dependencies
 only; it is not recursive dependency intent context. Query their item/node IDs
 before making an adjustment to that dependency.
+
+With `workIds`, the response adds one complete `currentWork[]` entry per
+requested work (saved objective, scope, exclusions, acceptance criteria,
+selection, upper-layer observations with their resolved origin, resume point,
+change classes and the current record id). Its `basis` also says whether
+implementation/verification support snapshots are `persisted`, `partial`,
+`missing` (legacy record, not comparable) or `unverified` (saved, but this read
+path could not recompute digests); absence is never represented as “unchanged”.
+The per-Feature context read normally injects the canonical digest function and
+can compare the persisted entries directly.
+An unknown ID fails the whole call
+with `work_not_found`; it is never dropped. `workHistoryPage` /
+`workHistoryPageSize` page only that work's older revisions and are rejected
+without `workIds`, because paging the whole map would hide applicable intent.
+The work's owning capability is added to the read scope, but its Feature
+checkpoint chain is omitted by default and reported as `omitted` rather than
+truncated; pass `includeFeatureChain: true` to include it as well. A work record
+is a saved round, not a review, delivery stage, completion metric or
+authorization. `project_get` answers the same question from the other side with
+a bounded `currentWorkIndex` (`workId`, Feature, title, lifecycle, basis review),
+which is a locator and not a progress report.
 
 ### Feature progress responses
 

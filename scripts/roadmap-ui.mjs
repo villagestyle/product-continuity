@@ -87,6 +87,425 @@ export function renderRoadmapFilters() {
   return `<div class="roadmap-filters" role="group" aria-label="按规划位置筛选功能规划">${labels.map(([value, label]) => `<button type="button" data-roadmap-filter="${value}" aria-pressed="${value === 'all'}" data-testid="roadmap-filter-${value}">${label}</button>`).join('')}</div>`;
 }
 
+// ---------------------------------------------------------------------------
+// 本轮在做 (current work): entry, detail, editor, preview
+// ---------------------------------------------------------------------------
+//
+// Contract: references/current-work-contract.md §13. A saved work is a saved
+// round of work, never a review, a Feature delivery stage, a completion metric
+// or an execution authorization. The three chips (§13.2: work lifecycle, Feature
+// delivery, saved delivery reading) are rendered by three different surfaces and
+// are never merged into one.
+//
+// Every function below is stringified into the page, so it must be
+// self-contained: labels, escaping and defaults live inside the function.
+export const currentWorkStyles = `
+.current-work-panel{padding:1rem;border-bottom:1px solid var(--line);background:var(--surface);min-width:0}
+.current-work-panel-head{display:flex;justify-content:space-between;gap:.6rem;align-items:flex-start;margin-bottom:.4rem}
+.current-work-panel-head h2{font-size:1.02rem;margin:0;overflow-wrap:anywhere}
+.current-work-panel-head>div{min-width:0;flex:1}.current-work-panel-head>button{flex:0 0 auto;white-space:nowrap}
+.current-work-list{list-style:none;margin:.35rem 0;padding:0;display:grid;gap:.3rem}
+.current-work-row{display:flex;gap:.35rem;align-items:stretch}
+.current-work-entry{flex:1 1 auto;min-width:0;text-align:left;padding:.4rem .55rem;border:1px solid var(--line);border-left:4px solid #8a9691;border-radius:5px;background:var(--paper)}
+.current-work-entry:hover{background:#edf3ef}
+.current-work-entry[aria-pressed=true]{border-color:var(--blue);background:var(--blue-soft)}
+.current-work-entry[data-lifecycle=active]{border-left-color:var(--green)}
+.current-work-entry[data-lifecycle=paused]{border-left-color:var(--amber)}
+.current-work-entry[data-lifecycle=ended]{border-left-color:#8a9691}
+.current-work-entry-title{display:block;font-weight:600;overflow-wrap:anywhere}
+.current-work-entry-meta{display:block;color:var(--muted);font-size:.74rem;margin-top:.15rem;overflow-wrap:anywhere}
+.current-work-locate{flex:0 0 auto;font-size:.76rem;padding:.2rem .5rem}
+.current-work-empty{border:1px dashed #aebcb6;border-radius:5px;padding:.5rem .6rem;color:var(--muted);font-size:.82rem;background:var(--paper)}
+.current-work-chip{display:inline-flex;align-items:center;border-radius:999px;padding:.04rem .45rem;font-size:.7rem;font-weight:600;line-height:1.5;border:1px solid #c3cdc9;background:#eef1f0;color:#445853;white-space:nowrap}
+.current-work-chip[data-lifecycle=active]{background:var(--green-soft);color:#1e5945;border-color:#9cc6b2}
+.current-work-chip[data-lifecycle=paused]{background:var(--amber-soft);color:#6d4a10;border-color:#e3cfa4}
+.current-work-chip[data-confirmation=confirmed]{background:var(--green-soft);color:#1e5945;border-color:#9cc6b2}
+.current-work-chip[data-confirmation=candidate]{background:var(--blue-soft);color:#1d4d7a;border-color:#bcd2e4}
+.current-work-chip[data-confirmation=unconfirmed]{background:#fbf5e6;color:#6d4a10;border-color:#e3cfa4}
+.current-work-badge{display:inline-flex;align-items:center;gap:.2rem;border-radius:999px;padding:.04rem .4rem;font-size:.7rem;font-weight:600;border:1px solid #9cc6b2;background:var(--green-soft);color:#1e5945;white-space:nowrap}
+.current-work-detail{min-width:0;overflow-wrap:anywhere}
+.current-work-detail h3{font-size:.98rem;margin:0 0 .2rem}
+.current-work-detail h4{font-size:.86rem;margin:.7rem 0 .2rem}
+.current-work-detail ul{margin:.2rem 0;padding-left:1.1rem}
+.current-work-detail li{margin:.15rem 0}
+.current-work-state{display:flex;flex-wrap:wrap;gap:.3rem;margin:.4rem 0}
+.current-work-muted{color:var(--muted);font-size:.82rem;margin:.15rem 0}
+.current-work-meta{color:var(--muted);font-size:.76rem;margin:.12rem 0}
+.current-work-layer{background:#f7fbf9;border:1px solid #d5e2db;border-radius:4px;padding:.35rem .5rem;margin:.3rem 0}
+.current-work-boundary{background:#fff;border:1px solid #d5e2db;border-radius:4px;padding:.35rem .5rem;font-size:.8rem;color:#3d5750;margin:.4rem 0}
+.current-work-warning{border:1px solid #e3cfa4;background:#fbf5e6;border-radius:4px;padding:.35rem .5rem;font-size:.8rem;color:#6d4a10;margin:.4rem 0}
+.current-work-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0 .2rem}
+.current-work-form{display:grid;gap:.55rem;min-width:0}
+.current-work-form fieldset{border:1px solid var(--line);border-radius:6px;padding:.6rem;margin:0;min-width:0}
+.current-work-form label{display:block;font-size:.8rem;font-weight:600;margin:.35rem 0 .1rem}
+.current-work-form input[type=text],.current-work-form textarea,.current-work-form select{width:100%}
+.current-work-form textarea{min-height:4.2rem}
+.current-work-form[data-readonly=true] .current-work-business{background:var(--paper)}
+.current-work-diff table{width:100%;border-collapse:collapse;font-size:.76rem}
+.current-work-diff th,.current-work-diff td{border:1px solid var(--line);padding:.25rem .35rem;vertical-align:top;text-align:left}
+.current-work-diff pre{margin:0;max-height:9rem;overflow:auto;font-size:.72rem;white-space:pre-wrap;overflow-wrap:anywhere}
+.current-work-history{list-style:none;margin:.3rem 0;padding:0;display:grid;gap:.3rem}
+.current-work-history li{border:1px solid var(--line);border-radius:4px;padding:.3rem .45rem;background:var(--paper)}
+`;
+
+/**
+ * One entry in a Feature detail's 本轮在做 list.
+ * `entry`: {workId, nodeId, workTitle, featureLabel, lifecycle, updatedAt,
+ *           basisReview, endsReason}
+ */
+export function renderCurrentWorkEntry(entry, options = {}) {
+  if (!entry || typeof entry !== 'object') return '';
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+  const lifecycleLabels = { active: '进行中', paused: '已暂停', ended: '已结束' };
+  const endedLabels = { handoff: '已交接', cancelled: '已取消', scope_completed: '范围完成', other: '其它原因' };
+  const basisLabels = {
+    unchanged: '依据未变', changed: '依据有变化', unverified_no_digest: '依据内容未比较',
+    unavailable: '依据无法比较', no_checkpoint: '尚无续接记录',
+  };
+  const historical = options.historical === true;
+  const selected = options.selected === true;
+  const lifecycle = typeof entry.lifecycle === 'string' ? entry.lifecycle : 'ended';
+  const lifecycleText = lifecycle === 'ended' && endedLabels[entry.endsReason]
+    ? `已结束 · ${endedLabels[entry.endsReason]}`
+    : (lifecycleLabels[lifecycle] ?? lifecycle);
+  const basisText = basisLabels[entry.basisReview] ?? (entry.basisReview ? String(entry.basisReview) : '依据未比较');
+  const title = typeof entry.workTitle === 'string' && entry.workTitle ? entry.workTitle : '（未命名本轮工作）';
+  const meta = `<span class="current-work-entry-meta">${esc(lifecycleText)} · ${esc(basisText)}${entry.updatedAt ? ` · ${esc(String(entry.updatedAt).slice(0, 16).replace('T', ' '))}` : ''}</span>`;
+  if (historical) {
+    return `<li class="current-work-row" data-readonly="true">
+      <div class="current-work-entry" data-testid="current-work-entry" data-work-id="${esc(entry.workId)}" data-lifecycle="${esc(lifecycle)}">
+        <span class="current-work-entry-title">${esc(title)}</span>${meta}
+      </div>
+    </li>`;
+  }
+  return `<li class="current-work-row">
+    <button type="button" class="current-work-entry" data-testid="current-work-entry" data-work-id="${esc(entry.workId)}" data-work-node-id="${esc(entry.nodeId ?? '')}" data-lifecycle="${esc(lifecycle)}" aria-pressed="${selected ? 'true' : 'false'}">
+      <span class="current-work-entry-title">${esc(title)}</span>${meta}
+    </button>
+    ${entry.nodeId ? `<button type="button" class="current-work-locate" data-work-focus-node="${esc(entry.nodeId)}" data-testid="current-work-locate" aria-label="在画布中定位 ${esc(title)} 所属能力">定位</button>` : ''}
+  </li>`;
+}
+
+/** Card badge: a word, never only a colour (§13.2). */
+export function renderCurrentWorkBadge(entry) {
+  if (!entry || typeof entry !== 'object') return '';
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+  const lifecycleLabels = { active: '进行中', paused: '已暂停', ended: '已结束' };
+  const lifecycle = typeof entry.lifecycle === 'string' ? entry.lifecycle : 'ended';
+  const title = typeof entry.workTitle === 'string' && entry.workTitle ? entry.workTitle : '本轮工作';
+  const label = `本轮在做 · ${lifecycleLabels[lifecycle] ?? lifecycle}`;
+  return `<span class="current-work-badge" data-testid="current-work-badge" data-lifecycle="${esc(lifecycle)}" data-work-id="${esc(entry.workId)}" title="${esc(title)}">${esc(label)}</span>`;
+}
+
+/**
+ * One complete work reading, in the frozen §13.2 order:
+ * 上层目标 / 工程阶段 → 依据需求 → 本轮做／不做 → 验收目标 →
+ * 整体交付及已记录未闭环路径 → 本轮停点／下一步 → 范围建议（未选定） → 依据复核.
+ */
+export function renderCurrentWorkDetail(work, options = {}) {
+  if (!work || typeof work !== 'object') return '';
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+  const asArray = (value) => (Array.isArray(value) ? value : []);
+  const historical = options.historical === true;
+  const lifecycleLabels = { active: '进行中', paused: '已暂停', ended: '已结束' };
+  const endedLabels = { handoff: '已交接', cancelled: '已取消', scope_completed: '范围完成', other: '其它原因' };
+  const confirmationLabels = { confirmed: '已确认', candidate: '候选', unconfirmed: '未确认', not_applicable: '不适用' };
+  const gapLabels = { no_relation: '已查找，没有合格的上层关系', kind_only: '只有类型相近，未确认关系', candidate_only: '只有候选，未确认' };
+  const selectionLabels = { user_selected: '用户选定', within_task_authorization: '任务授权范围内', agent_proposed_unselected: '代理建议（未选定）' };
+  const statusLabels = {
+    unchanged: '依据未变', changed: '依据有变化', unverified_no_digest: '注入了摘要但未比较内容',
+    unavailable: '依据无法比较', no_checkpoint: '尚无续接记录',
+  };
+  const changeLabels = {
+    requirement_content_changed: '需求内容变化', requirement_unavailable: '需求内容无法比较',
+    confirmation_changed: '确认状态变化', bookkeeping_changed: '记录字段变化',
+  };
+  const responsibilityLabels = { agent: '代理', user: '用户', device_operator: '设备操作者', unknown: '未指定' };
+  const authorizationLabels = {
+    none: '无需额外授权', source_write: '修改源码或配置', test_execution: '运行测试或命令',
+    state_write: '写项目状态', service_restart: '停启本地服务', distribution: '构建或发布正式包',
+  };
+  const workId = typeof work.workId === 'string' ? work.workId : '';
+  const lifecycle = work.lifecycle && typeof work.lifecycle === 'object' ? work.lifecycle : { status: 'ended', endedReason: null, endedNote: null };
+  const lifecycleText = lifecycle.status === 'ended' && endedLabels[lifecycle.endedReason]
+    ? `已结束 · ${endedLabels[lifecycle.endedReason]}`
+    : (lifecycleLabels[lifecycle.status] ?? String(lifecycle.status ?? '未记录'));
+  const upper = work.upper && typeof work.upper === 'object' ? work.upper : {};
+  const itemList = (items, emptyText) => (asArray(items).length
+    ? `<ul>${asArray(items).map((item) => `<li>${esc(item && typeof item === 'object' ? item.statement : item)}</li>`).join('')}</ul>`
+    : `<p class="current-work-muted">${esc(emptyText)}</p>`);
+  // Missing layers say so in place; they are never a blank (§13.2).
+  const layer = (title, value, testId) => {
+    const head = `<h4>${esc(title)}</h4>`;
+    if (!value || typeof value !== 'object' || value.state === 'not_recorded') {
+      return `<div class="current-work-layer" data-testid="${esc(testId)}" data-layer-state="not_recorded">${head}<p class="current-work-muted">未记录</p></div>`;
+    }
+    if (value.state === 'gap') {
+      return `<div class="current-work-layer" data-testid="${esc(testId)}" data-layer-state="gap">${head}<p class="current-work-muted">上下文缺口：${esc(title)}</p><p class="current-work-meta">${esc(gapLabels[value.reason] ?? '已查找，没有合格记录')}</p></div>`;
+    }
+    if (value.state === 'unavailable') {
+      return `<div class="current-work-layer" data-testid="${esc(testId)}" data-layer-state="unavailable">${head}<p class="current-work-muted">上下文缺口：${esc(title)}（保存时无法读取）</p></div>`;
+    }
+    const observed = value.observed && typeof value.observed === 'object' ? value.observed : {};
+    const confirmation = observed.confirmation && typeof observed.confirmation === 'object' ? observed.confirmation : {};
+    const label = typeof observed.label === 'string' && observed.label ? observed.label : (value.ref?.id ?? '未记录标签');
+    const chip = `<span class="current-work-chip" data-confirmation="${esc(confirmation.status ?? 'unconfirmed')}">${esc(confirmationLabels[confirmation.status] ?? '未确认')}</span>`;
+    const snapshotNote = observed.snapshotAvailable === true ? '' : '<p class="current-work-meta">按摘要保存；正文快照未写入</p>';
+    return `<div class="current-work-layer" data-testid="${esc(testId)}" data-layer-state="found">${head}
+      <p>${esc(label)} ${chip}</p>
+      <p class="current-work-meta">引用：<code>${esc(value.ref?.id ?? '未记录')}</code>（${esc(value.ref?.collection ?? '未记录')}）</p>
+      ${snapshotNote}
+    </div>`;
+  };
+  const openPaths = asArray(upper.openUserPaths);
+  const adopted = asArray(work.adopted);
+  const changes = asArray(work.changes);
+  const supportDigestNote = work.supportDigestSource === 'missing'
+    ? '本条旧记录未保存实现／验证材料摘要，同 ID 内容无法比较；这不表示材料未变化。'
+    : work.supportDigestSource === 'partial'
+      ? `实现／验证材料摘要不完整，${asArray(work.supportDigestMissing).length} 项无法比较；不视为未变化。`
+      : work.supportDigestSource === 'unverified'
+        ? '本条记录已保存实现／验证摘要，但当前页面无法重新计算摘要，不能据此判断内容未变化。'
+        : null;
+  const selection = work.selection && typeof work.selection === 'object' ? work.selection : null;
+  const resume = work.resume && typeof work.resume === 'object' ? work.resume : null;
+  const resumeHtml = resume
+    ? `<dl class="intent-fields">
+        <dt>本轮停点</dt><dd>${esc(resume.stopPoint ?? '未记录')}</dd>
+        <dt>下一步</dt><dd>${esc(resume.nextStep ?? '未记录')}</dd>
+        <dt>责任方</dt><dd>${esc(responsibilityLabels[resume.responsibility] ?? resume.responsibility ?? '未记录')}</dd>
+        <dt>所需授权</dt><dd>${esc(asArray(resume.authorizationRequired).length ? asArray(resume.authorizationRequired).map((value) => authorizationLabels[value] ?? value).join('、') : '未记录')}</dd>
+      </dl>`
+    : '<p class="current-work-muted">停点与下一步未记录</p>';
+  const rangeHtml = selection
+    ? `<p class="current-work-muted">范围建议：${esc(selectionLabels[selection.kind] ?? selection.kind ?? '未记录')}${selection.kind === 'agent_proposed_unselected' ? '（未选定，不会自动成为工作范围）' : ''}</p>
+       <p class="current-work-meta">来源：${esc(asArray(selection.sourceRefs).length ? asArray(selection.sourceRefs).join('；') : '未记录')}</p>`
+    : '<p class="current-work-muted">范围建议（未选定）</p>';
+  const changesHtml = changes.length
+    ? `<ul>${changes.map((change) => `<li><strong>${esc(changeLabels[change.class] ?? change.class)}</strong> · ${esc(change.layer ?? '')} · <code>${esc(change.id ?? '')}</code>${asArray(change.fields).length ? ` · 字段：${esc(asArray(change.fields).join('、'))}` : ''}${change.hasBothContents === false ? ' · 只有一份内容可对照' : ''}</li>`).join('')}</ul>`
+    : '<p class="current-work-muted">没有记录到变化类别。</p>';
+  const adoptedHtml = adopted.length
+    ? `<ul>${adopted.map((entry) => `<li><code>${esc(entry.claimId)}</code> · ${esc(entry.state === 'unavailable' ? '依据内容不可得' : entry.matches === true ? '与保存摘要一致' : entry.matches === false ? '与保存摘要不同' : '未比较摘要')}</li>`).join('')}</ul>`
+    : '<p class="current-work-muted">没有显式采用的依据需求。</p>';
+  const controlsHtml = historical
+    ? '<p class="current-work-boundary" data-readonly="true">历史快照只读：不显示保存或预览控制，不写入当前状态。</p>'
+    : `<div class="current-work-actions">
+        ${lifecycle.status === 'ended' ? '' : '<button type="button" data-work-action="edit" data-work-operation="adjust" data-work-id="' + esc(workId) + '">编辑本轮工作</button>'}
+        ${lifecycle.status === 'active' ? '<button type="button" data-work-action="edit" data-work-operation="pause" data-work-id="' + esc(workId) + '">暂停</button>' : ''}
+        ${lifecycle.status === 'paused' ? '<button type="button" data-work-action="edit" data-work-operation="resume" data-work-id="' + esc(workId) + '">继续</button>' : ''}
+        ${lifecycle.status === 'ended' ? '' : '<button type="button" data-work-action="edit" data-work-operation="end" data-work-id="' + esc(workId) + '">结束本轮</button>'}
+        <button type="button" data-work-action="history" data-work-id="${esc(workId)}">历次修订</button>
+        <button type="button" data-work-action="back">回到现在</button>
+      </div>`;
+  return `<article class="current-work-detail" data-testid="current-work-detail" data-work-id="${esc(workId)}" data-lifecycle="${esc(lifecycle.status ?? 'ended')}"${historical ? ' data-readonly="true"' : ''}>
+    <header>
+      <p class="eyebrow">本轮在做 · 保存记录（非评审、非授权）</p>
+      <h3>${esc(work.workTitle || '（未命名本轮工作）')}</h3>
+      <div class="current-work-state">
+        <span class="current-work-chip" data-testid="current-work-lifecycle" data-lifecycle="${esc(lifecycle.status ?? 'ended')}">${esc(lifecycleText)}</span>
+        <span class="current-work-chip" data-testid="current-work-basis-review">依据复核：${esc(statusLabels[work.contextStatus] ?? '未比较')}</span>
+        <span class="current-work-chip">修订 ${esc(work.revisionCount ?? 0)} 次</span>
+      </div>
+      <p class="current-work-meta">所属能力：<code>${esc(work.nodeId ?? '未记录')}</code>${work.featureLabel ? ` · ${esc(work.featureLabel)}` : ''} · 工作 ID：<code>${esc(workId)}</code></p>
+      ${work.updatedAt ? `<p class="current-work-meta">最近保存：${esc(String(work.updatedAt).slice(0, 19).replace('T', ' '))}</p>` : ''}
+    </header>
+    ${layer('上层目标', upper.productGoal, 'work-layer-product-goal')}
+    ${layer('工程阶段', upper.stage, 'work-layer-stage')}
+    <h4>依据需求</h4>
+    ${adoptedHtml}
+    <p class="current-work-meta">依据复核：${esc(statusLabels[work.contextStatus] ?? '未比较')}${work.contentComparable === false ? '（本页未注入内容摘要，因此不比较正文差异）' : ''}</p>
+    <h4>本轮做</h4>
+    ${itemList(work.scope, '本轮做未记录（空数组只表示这一版没有记录，不表示范围无限）')}
+    <h4>本轮不做</h4>
+    ${itemList(work.exclusions, '本轮不做未记录')}
+    <h4>验收目标</h4>
+    ${itemList(work.acceptanceCriteria, '验收目标未记录')}
+    <h4>整体交付及已记录未闭环路径</h4>
+    <p class="current-work-muted">整体交付读数在 Feature 交付状态里单独显示（独立通道，不并进本轮工作，也不代表验收或发布）。</p>
+    ${openPaths.length
+      ? `<ul>${openPaths.map((entry, index) => `<li>${esc(entry && entry.observed && entry.observed.label ? entry.observed.label : '未记录标签')} <span class="current-work-meta">（path ${index + 1}${entry && entry.state === 'gap' ? ' · 上下文缺口' : ''}）</span></li>`).join('')}</ul>`
+      : '<p class="current-work-muted">未记录未闭环的用户路径。</p>'}
+    <h4>本轮停点／下一步</h4>
+    ${resumeHtml}
+    <h4>范围建议（未选定）</h4>
+    ${rangeHtml}
+    <h4>依据复核</h4>
+    ${supportDigestNote ? `<p class="current-work-warning" data-testid="current-work-support-comparison" data-comparable="false">${esc(supportDigestNote)}</p>` : work.supportContentComparable === true ? '<p class="current-work-meta" data-testid="current-work-support-comparison" data-comparable="true">实现／验证支持材料有保存摘要，可逐项比较。</p>' : ''}
+    ${changesHtml}
+    ${work.changesTruncated === true ? '<p class="current-work-warning">变化类别过多，只显示前一部分；完整记录在状态文件里。</p>' : ''}
+    <p class="current-work-boundary">本轮在做是保存的工作说明：不是人工评审，不是 Feature 交付阶段，不是完成度，也不授予执行或写入权限。</p>
+    ${controlsHtml}
+  </article>`;
+}
+
+/**
+ * The separate work editor (§13.2). It always submits a COMPLETE business
+ * snapshot; for pause/resume/end the business fields are read-only so the only
+ * thing a human can change is the lifecycle and its reason.
+ *
+ * `work` is the same projection renderCurrentWorkDetail takes; `options.phase`
+ * is 'editing' | 'previewing' | 'previewReady' | 'saving' | 'saved' | 'conflict'
+ * | 'failed' | 'unknown'.
+ */
+export function renderCurrentWorkEditor(work, options = {}) {
+  if (!work || typeof work !== 'object') return '';
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+  const escAttr = (value) => esc(value).replaceAll('`', '&#96;');
+  const asArray = (value) => (Array.isArray(value) ? value : []);
+  const operation = ['open', 'adjust', 'pause', 'resume', 'end'].includes(options.operation)
+    ? options.operation
+    : 'adjust';
+  const operationLabels = { open: '开始本轮', adjust: '编辑本轮', pause: '暂停本轮', resume: '继续本轮', end: '结束本轮' };
+  const lifecycleLabels = { active: '进行中', paused: '已暂停', ended: '已结束' };
+  const responsibilityLabels = { agent: '代理', user: '用户', device_operator: '设备操作者', unknown: '未指定' };
+  const authorizationLabels = {
+    none: '无需额外授权', source_write: '修改源码或配置', test_execution: '运行测试或命令',
+    state_write: '写项目状态', service_restart: '停启本地服务', distribution: '构建或发布正式包',
+  };
+  const endedLabels = { handoff: '已交接', cancelled: '已取消', scope_completed: '范围完成', other: '其它原因' };
+  const busy = options.phase === 'previewing' || options.phase === 'saving';
+  const businessReadOnly = operation === 'pause' || operation === 'resume' || operation === 'end';
+  const lifecycle = work.lifecycle && typeof work.lifecycle === 'object' ? work.lifecycle : { status: 'active', endedReason: null, endedNote: null };
+  const scope = asArray(work.scope).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
+  const exclusions = asArray(work.exclusions).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
+  const acceptance = asArray(work.acceptanceCriteria).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
+  const resume = work.resume && typeof work.resume === 'object' ? work.resume : null;
+  const readOnlyAttr = businessReadOnly ? ' readonly aria-readonly="true"' : '';
+  const disabledAttr = busy ? ' disabled' : '';
+  const authorizationOptions = Object.keys(authorizationLabels).map((value) => {
+    const checked = asArray(resume?.authorizationRequired).includes(value) ? ' checked' : '';
+    return `<label class="current-work-check"><input type="checkbox" data-field="authorizationRequired" value="${escAttr(value)}"${checked}${businessReadOnly || busy ? ' disabled' : ''}> ${esc(authorizationLabels[value])}</label>`;
+  }).join('');
+  return `<form class="current-work-form" data-testid="current-work-form" data-form="current-work" data-work-id="${escAttr(work.workId ?? '')}" data-operation="${escAttr(operation)}" data-node-id="${escAttr(work.nodeId ?? '')}" data-predecessor-id="${escAttr(work.currentRecordId ?? '')}" data-readonly="${businessReadOnly ? 'true' : 'false'}" aria-label="${escAttr(operationLabels[operation])}" novalidate>
+    <p class="eyebrow">${esc(operationLabels[operation])} · 提交完整快照</p>
+    <p class="current-work-meta">表单每次都提交完整工作快照，不会让服务端合并旧值。${businessReadOnly ? '暂停／继续／结束只改生命周期：业务字段按保存值只读带入，改动会被服务端拒绝。' : ''}</p>
+    <fieldset class="current-work-business">
+      <legend>本轮工作</legend>
+      <label for="work-title-input">标题</label>
+      <input type="text" id="work-title-input" data-field="workTitle" value="${escAttr(work.workTitle ?? '')}" maxlength="200"${readOnlyAttr}${disabledAttr}>
+      <label for="work-objective-input">目标</label>
+      <textarea id="work-objective-input" data-field="objective" maxlength="2000"${readOnlyAttr}${disabledAttr}>${esc(work.objective ?? '')}</textarea>
+      <label for="work-scope-input">本轮做（每行一条）</label>
+      <textarea id="work-scope-input" data-field="scope"${readOnlyAttr}${disabledAttr}>${esc(scope.join('\n'))}</textarea>
+      <label for="work-exclusions-input">本轮不做（每行一条）</label>
+      <textarea id="work-exclusions-input" data-field="exclusions"${readOnlyAttr}${disabledAttr}>${esc(exclusions.join('\n'))}</textarea>
+      <label for="work-acceptance-input">验收目标（每行一条）</label>
+      <textarea id="work-acceptance-input" data-field="acceptanceCriteria"${readOnlyAttr}${disabledAttr}>${esc(acceptance.join('\n'))}</textarea>
+      <label for="work-source-refs-input">来源引用（每行一条）</label>
+      <textarea id="work-source-refs-input" data-field="sourceRefs"${readOnlyAttr}${disabledAttr}>${esc(asArray(work.sourceRefs).join('\n'))}</textarea>
+    </fieldset>
+    <fieldset>
+      <legend>停点与下一步</legend>
+      <label for="work-stop-point-input">本轮停点</label>
+      <input type="text" id="work-stop-point-input" data-field="stopPoint" value="${escAttr(resume?.stopPoint ?? '')}" maxlength="2000"${readOnlyAttr}${disabledAttr}>
+      <label for="work-next-step-input">下一步</label>
+      <input type="text" id="work-next-step-input" data-field="nextStep" value="${escAttr(resume?.nextStep ?? '')}" maxlength="2000"${readOnlyAttr}${disabledAttr}>
+      <label for="work-responsibility-select">责任方</label>
+      <select id="work-responsibility-select" data-field="responsibility"${businessReadOnly || busy ? ' disabled' : ''}>
+        ${Object.keys(responsibilityLabels).map((value) => `<option value="${escAttr(value)}"${(resume?.responsibility ?? 'agent') === value ? ' selected' : ''}>${esc(responsibilityLabels[value])}</option>`).join('')}
+      </select>
+      <p class="current-work-meta">所需授权（记录建议，不会自动执行）</p>
+      ${authorizationOptions}
+    </fieldset>
+    ${operation === 'end' ? `<fieldset>
+      <legend>结束原因</legend>
+      <label for="work-ended-reason-select">原因</label>
+      <select id="work-ended-reason-select" data-field="endedReason"${busy ? ' disabled' : ''}>
+        ${Object.keys(endedLabels).map((value) => `<option value="${escAttr(value)}"${(lifecycle.endedReason ?? 'scope_completed') === value ? ' selected' : ''}>${esc(endedLabels[value])}</option>`).join('')}
+      </select>
+      <label for="work-ended-note-input">说明（可选）</label>
+      <input type="text" id="work-ended-note-input" data-field="endedNote" value="${escAttr(lifecycle.endedNote ?? '')}" maxlength="2000"${busy ? ' disabled' : ''}>
+    </fieldset>` : ''}
+    <p class="current-work-meta">生命周期会按操作变为：${esc(operation === 'pause' ? lifecycleLabels.paused : operation === 'end' ? lifecycleLabels.ended : lifecycleLabels.active)}。上层目标、工程阶段、范围建议由服务端按当前状态重新解析，表单不会让它们变成自由 JSON。</p>
+    <div class="current-work-actions">
+      <button type="button" data-work-action="preview"${busy ? ' disabled' : ''}>生成预览</button>
+      <button type="button" data-work-action="save"${options.phase === 'previewReady' ? '' : ' hidden'}>保存（写入后回读）</button>
+      <button type="button" data-work-action="cancel"${busy ? ' disabled' : ''}>取消</button>
+    </div>
+    <p class="current-work-meta" data-work-testid="work-phase" data-phase="${escAttr(options.phase ?? 'editing')}">${esc({
+      editing: '编辑中：还没有生成预览。', previewing: '正在生成预览（不写任何文件）…', previewReady: '预览已生成：确认差异后再保存。',
+      saving: '正在保存…', saved: '已保存并回读。', conflict: '保存冲突：请重新读取后重试。',
+      failed: '保存失败：草稿仍保留。', unknown: '保存结果未知：正在独立读取状态。',
+    }[options.phase ?? 'editing'] ?? '编辑中。')}</p>
+  </form>`;
+}
+
+/** The human-facing diff of a preview (§10.2). Nothing here writes anything. */
+export function renderCurrentWorkPreview(preview) {
+  if (!preview || typeof preview !== 'object') return '';
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+  const asArray = (value) => (Array.isArray(value) ? value : []);
+  const groupLabels = {
+    lifecycle: '生命周期', workTitle: '标题', objective: '目标', scope: '本轮做', exclusions: '本轮不做',
+    acceptanceCriteria: '验收目标', selection: '范围选择', upper: '上层依据', resume: '停点／下一步',
+    source: '来源', sourceRefs: '来源引用', basisRefs: '依据引用', adoptedBasis: '采用的依据需求', recordShell: '整体记录外壳',
+  };
+  const valueHtml = (value) => {
+    let text;
+    try { text = JSON.stringify(value ?? null, null, 1); } catch { text = String(value); }
+    if (text === undefined) text = 'null';
+    return `<pre>${esc(text)}</pre>`;
+  };
+  const rows = asArray(preview.diff).map((group) => `<tr>
+      <th scope="row">${esc(groupLabels[group.group] ?? group.group)}</th>
+      <td>${valueHtml(group.before)}</td>
+      <td>${valueHtml(group.after)}</td>
+    </tr>`).join('');
+  const sidecars = asArray(preview.sidecarPlan);
+  return `<section class="current-work-diff" data-testid="current-work-diff" data-phase="previewReady">
+    <h4>预览：将要写入的记录</h4>
+    <p class="current-work-meta">预览不写任何文件：没有状态、没有备份、没有 sidecar、没有预览文件。</p>
+    <dl class="intent-fields">
+      <dt>操作</dt><dd>${esc(preview.operation ?? '未记录')}</dd>
+      <dt>工作 ID</dt><dd><code>${esc(preview.workId ?? '未记录')}</code></dd>
+      <dt>预览内容摘要</dt><dd><code>${esc(preview.previewContentDigest ?? '未记录')}</code></dd>
+      <dt>预览有效期</dt><dd>${esc(preview.expiresAt ?? '未记录')}</dd>
+    </dl>
+    <div style="overflow-x:auto">
+      <table>
+        <caption class="current-work-meta">两侧都是完整值，不是缩写；没有变化的组也列出。</caption>
+        <thead><tr><th scope="col">分组</th><th scope="col">当前保存值</th><th scope="col">将写入值</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <h4>将要创建的 sidecar</h4>
+    ${sidecars.length
+      ? `<ul>${sidecars.map((entry) => `<li><code>${esc(entry.path)}</code> · ${esc(entry.collection ?? '')} ${esc(entry.claimId ?? '')}</li>`).join('')}</ul>`
+      : '<p class="current-work-muted">本次预览不创建 sidecar。</p>'}
+    ${asArray(preview.notes).length ? `<ul>${asArray(preview.notes).map((note) => `<li>${esc(note)}</li>`).join('')}</ul>` : ''}
+  </section>`;
+}
+
+/** Read-only list of one work's revisions, newest first (§13.2 history). */
+export function renderCurrentWorkHistory(work) {
+  if (!work || typeof work !== 'object') return '';
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+  const records = Array.isArray(work.historyRecords) ? work.historyRecords : [];
+  const operationLabels = { open: '开始', adjust: '编辑', pause: '暂停', resume: '继续', end: '结束' };
+  return `<section class="current-work-detail" data-testid="current-work-history" data-readonly="true">
+    <h4>历次修订（新→旧，只读）</h4>
+    <p class="current-work-meta">历史快照只读：没有保存或预览控制，不写入当前状态。</p>
+    ${records.length
+      ? `<ol class="current-work-history">${records.map((record) => `<li>
+          <strong>${esc(operationLabels[record.operation] ?? record.operation ?? '记录')}</strong> · ${esc(String(record.createdAt ?? '').slice(0, 19).replace('T', ' '))}
+          <div class="current-work-meta"><code>${esc(record.id ?? '未记录')}</code> · ${esc(record.workTitle ?? '')}</div>
+        </li>`).join('')}</ol>`
+      : '<p class="current-work-muted">没有可显示的历史修订。</p>'}
+  </section>`;
+}
+
 // Plain JSON projection of deriveFeatureProgress() for card and list summaries.
 // The words are deliberately those of contract §11.1: a saved record is not a
 // review, not a completion rate and not an execution authorization.

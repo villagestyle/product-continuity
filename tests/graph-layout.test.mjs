@@ -25,6 +25,18 @@ test('lays out explicit hierarchy left-to-right and preserves cross-link kinds a
   assert.deepEqual(layout, buildGraphLayout(nodes, edges));
 });
 
+test('comparison-only edges place ghosts without changing real selected-snapshot parents',()=>{
+  const input=[{id:'a'},{id:'b'},{id:'ghost',diffGhost:true}],relations=[
+    {id:'old-parent',from:'a',to:'b',kind:'contains',diffGhost:true},
+    {id:'old-ghost',from:'a',to:'ghost',kind:'contains',diffGhost:true},
+    {id:'selected',from:'b',to:'a',kind:'depends_on'},
+  ];
+  const result=buildGraphLayout(input,relations),byId=new Map(result.nodes.map(n=>[n.id,n]));
+  assert.equal(byId.get('b').parentId,null);assert.equal(byId.get('a').parentId,'b');
+  assert.equal(byId.get('ghost').parentId,'a');assert.equal(result.edges.length,3);
+  assert.deepEqual(result.warnings,[]);
+});
+
 test('does not overlap node boxes in branching or disconnected components', () => {
   const layout = buildGraphLayout(nodes, edges);
   for (let i = 0; i < layout.nodes.length; i++) {

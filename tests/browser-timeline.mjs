@@ -120,6 +120,8 @@ try {
     assert.equal(await page.evaluate('Boolean(document.querySelector(\'.graph-node[data-node-id="unknown:historical-only"]\'))'),true);
     assert.match(await page.evaluate('document.querySelector("#graph-world").textContent'),/v2 的任务名称/);
     assert.match(await page.evaluate('document.querySelector("#graph-time-label").textContent'),/历史 · 只读 · v2/);
+    await page.waitFor('document.querySelector("#version-diff-bar").dataset.status==="ready"');
+    await page.click('#version-diff-enabled'); // Inspect snapshot facts independently of the new comparison surface.
     await page.click(`.graph-node[data-node-id=${q(ACCEPTANCE_NODE)}] .graph-node-select`);
     assert.match(await page.evaluate('document.querySelector("#history-panel").textContent'),/合成意图：可以新增一条记录/);
     assert.equal(await page.evaluate('document.querySelector("#review-current").hidden'),true);
@@ -224,6 +226,8 @@ try {
     await page.waitFor('document.querySelector("#graph-fullscreen").getAttribute("aria-pressed")==="true"&&!document.querySelector("#graph-fullscreen").disabled');
     await goVersion(1);
     assert.equal(await page.evaluate('document.querySelector("#graph-time").dataset.version'),'2');
+    await page.waitFor('document.querySelector("#version-diff-bar").dataset.status==="ready"');
+    await page.click('#version-diff-enabled');
     const bounds=await page.evaluate('(()=>{const c=document.querySelector("#graph-viewport").getBoundingClientRect();const t=document.querySelector("#graph-time").getBoundingClientRect();return {canvas:c.height,axis:t.bottom<=innerHeight,noOverlap:c.bottom<=t.top+.5}})()');
     assert.ok(bounds.canvas>=300);assert.equal(bounds.axis,true);assert.equal(bounds.noOverlap,true);
     const view=await page.evaluate(graphApi+'.getViewState()');

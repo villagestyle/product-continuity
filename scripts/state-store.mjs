@@ -63,6 +63,8 @@ function validatePreviewRequest(request) {
 
 export const DEFAULT_MAX_STATE_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_MAX_QUEUE = 16;
+// One current-work layer projection (current-work contract §7.4/§8.3).
+export const DEFAULT_MAX_SIDECAR_BYTES = 8192;
 export const LOCK_SUFFIX = '.review.lock';
 export const DEFAULT_VIEW_BASENAME = 'product-map.review.html';
 
@@ -99,6 +101,7 @@ export class StoreError extends Error {
 const defaultIo = {
   readFile: (...args) => fsp.readFile(...args),
   writeFile: (...args) => fsp.writeFile(...args),
+  mkdir: (...args) => fsp.mkdir(...args),
   open: (...args) => fsp.open(...args),
   rename: (...args) => fsp.rename(...args),
   unlink: (...args) => fsp.unlink(...args),
@@ -643,6 +646,219 @@ async function syncDirectoryBestEffort(io, directory) {
   }
 }
 
+function normaliseSidecarSegments(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 1024) return null;
+  if (value.includes('\\') || value.includes('\u0000')) return null;
+  if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return null;
+  const segments = value.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null;
+  return segments;
+}
+
+function sidecarBytes(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (typeof value === 'string') return Buffer.from(value, 'utf8');
+  return null;
+}
+
+/**
+ * Stage current-work sidecar files for one write attempt.
+ *
+ * Contract rules (current-work §7.2 / §7.4), deliberately attempt-scoped:
+ * - a path that already holds identical bytes is a no-op and is never added to
+ *   the attempt's created list, so a later rollback cannot delete a file an
+ *   earlier committed record still points at;
+ * - a path that already holds different bytes is `sidecar_conflict` and
+ *   nothing is overwritten;
+ * - a failure anywhere in this attempt removes exactly the files this attempt
+ *   created (newest first) before rethrowing;
+ * - `rollback()` is idempotent and only ever unlinks this attempt's own files.
+ *
+ * The caller writes the state rename only after this returns. Files that
+ * survive a crash between the sidecar rename and the state rename are accepted
+ * orphans; nothing here scans or garbage-collects a folder.
+ *
+ * @param {Array<{path: string, bytes: Buffer|Uint8Array|string}>} files
+ * @param {{io?: object, root: string, maxSidecarBytes?: number}} options
+ * @returns {Promise<{created: string[], written: string[], reused: string[], rollback: Function}>}
+ */
+export async function stageSidecarFiles(files, options = {}) {
+  const io = createIoAdapter(options.io);
+  const maxSidecarBytes = options.maxSidecarBytes ?? DEFAULT_MAX_SIDECAR_BYTES;
+  if (typeof options.root !== 'string' || options.root === '') {
+    throw new StoreError('prepare_failed', 'A sidecar root directory is required.', { status: 500 });
+  }
+  if (!Array.isArray(files)) {
+    throw new StoreError('prepare_failed', 'Sidecars must be an array.', { status: 500 });
+  }
+  if (typeof io.mkdir !== 'function') {
+    throw new StoreError('prepare_failed', 'The file adapter cannot create sidecar directories.', {
+      status: 500,
+    });
+  }
+  const rootPath = path.resolve(options.root);
+  const created = [];
+  const written = [];
+  const reused = [];
+  const seen = new Set();
+
+  const rollback = async () => {
+    const removed = [];
+    for (const target of [...created].reverse()) {
+      try {
+        await io.unlink(target);
+        removed.push(target);
+      } catch {
+        // Best effort: an already-missing file is the desired end state.
+      }
+    }
+    created.length = 0;
+    return removed;
+  };
+
+  try {
+    for (const file of files) {
+      const segments = normaliseSidecarSegments(file?.path);
+      if (!segments) {
+        throw new StoreError(
+          'prepare_failed',
+          'A sidecar path must be a project-relative POSIX path without "." or ".." segments.',
+          { status: 500 },
+        );
+      }
+      const label = segments.join('/');
+      const target = path.resolve(rootPath, ...segments);
+      const relative = path.relative(rootPath, target);
+      if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new StoreError('prepare_failed', 'A sidecar path escapes the sidecar root.', {
+          status: 500,
+        });
+      }
+      if (seen.has(target)) {
+        throw new StoreError('prepare_failed', 'The same sidecar path appears twice in one attempt.', {
+          status: 500,
+        });
+      }
+      seen.add(target);
+      const bytes = sidecarBytes(file?.bytes);
+      if (!bytes) {
+        throw new StoreError('prepare_failed', 'Sidecar bytes must be a Buffer, Uint8Array or string.', {
+          status: 500,
+        });
+      }
+      if (bytes.byteLength > maxSidecarBytes) {
+        throw new StoreError(
+          'prepare_failed',
+          `A sidecar is ${bytes.byteLength} bytes, above ${maxSidecarBytes}; it is never truncated.`,
+          { status: 500 },
+        );
+      }
+
+      await io.mkdir(path.dirname(target), { recursive: true });
+      let existing = null;
+      try {
+        existing = await io.readFile(target);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          throw new StoreError('prepare_failed', `Cannot inspect an existing sidecar: ${error.message}`, {
+            status: 500,
+            cause: error,
+          });
+        }
+      }
+      if (existing) {
+        const existingBytes = Buffer.isBuffer(existing) ? existing : Buffer.from(existing);
+        if (!existingBytes.equals(bytes)) {
+          throw new StoreError(
+            'sidecar_conflict',
+            'An existing current-work sidecar holds different bytes; it is never overwritten.',
+            { status: 409, details: { path: label } },
+          );
+        }
+        reused.push(label);
+        continue;
+      }
+
+      const temporary = `${target}.${process.pid}.${randomHex(4)}.pending`;
+      let handle;
+      try {
+        handle = await io.open(temporary, 'wx', 0o600);
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } catch (error) {
+        if (handle) {
+          try {
+            await handle.close();
+          } catch {
+            // The caller reports the write failure.
+          }
+          handle = null;
+        }
+        try {
+          await io.unlink(temporary);
+        } catch {
+          // Nothing else to clean up.
+        }
+        throw new StoreError('prepare_failed', `Cannot stage a sidecar: ${error.message}`, {
+          status: 500,
+          cause: error,
+        });
+      }
+      if (handle) {
+        try {
+          await handle.close();
+        } catch {
+          // A close failure is caught by the readback below.
+        }
+      }
+
+      let appeared = null;
+      try {
+        appeared = await io.readFile(target);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          try {
+            await io.unlink(temporary);
+          } catch {
+            // Nothing else to clean up.
+          }
+          throw new StoreError('prepare_failed', `Cannot re-check a sidecar target: ${error.message}`, {
+            status: 500,
+            cause: error,
+          });
+        }
+      }
+      if (appeared) {
+        const appearedBytes = Buffer.isBuffer(appeared) ? appeared : Buffer.from(appeared);
+        try {
+          await io.unlink(temporary);
+        } catch {
+          // Nothing else to clean up.
+        }
+        if (!appearedBytes.equals(bytes)) {
+          throw new StoreError(
+            'sidecar_conflict',
+            'A sidecar target appeared with different bytes; it is never overwritten.',
+            { status: 409, details: { path: label } },
+          );
+        }
+        reused.push(label);
+        continue;
+      }
+
+      await io.rename(temporary, target);
+      created.push(target);
+      written.push(label);
+    }
+  } catch (error) {
+    await rollback();
+    throw error;
+  }
+
+  return { created, written, reused, rollback };
+}
+
 const VIEW_MARKER_PATTERN =
   /^<!-- product-continuity-view owner=(sha256:[0-9a-f]{64}) stateVersion=(\d+) fileDigest=(sha256:[0-9a-f]{64}) -->/;
 
@@ -825,6 +1041,80 @@ async function acquireOptionalLocks(entries, options = {}) {
     }
   }
   return { acquired, optionalFailures };
+}
+
+/**
+ * Independent, read-only status read for `/api/current-work/status`.
+ *
+ * Contract §10.1: `/preview` and `/status` are read-only — they take no lock,
+ * create no queue entry and write no file. `store.read()` cannot satisfy that
+ * (it enqueues and verifies the cooperative lock), so this reader works
+ * straight off the canonical state path with its own bounded read. It never
+ * touches a store's cache, `writable` flag or read-only reason.
+ *
+ * A rename racing this read may yield the old or the new complete file; both
+ * are acceptable because the commit renames atomically. A partial, oversized
+ * or invalid file is a failure, never a guess.
+ *
+ * @param {string} statePath canonical state path
+ * @param {{
+ *   io?: object,
+ *   maxStateBytes?: number,
+ *   validate?: (state: unknown) => string[]
+ * }} [options] `validate` defaults to the full schema + reference gate
+ * @returns {Promise<{
+ *   statePath: string,
+ *   state: object,
+ *   schemaVersion: string|null,
+ *   stateVersion: number|null,
+ *   projectId: string|null,
+ *   fileDigest: string,
+ *   size: number
+ * }>}
+ */
+export async function readCurrentWorkStatusSnapshot(statePath, options = {}) {
+  const io = createIoAdapter(options.io);
+  const maxStateBytes = options.maxStateBytes ?? DEFAULT_MAX_STATE_BYTES;
+  const validate = typeof options.validate === 'function' ? options.validate : validateFullState;
+  if (typeof statePath !== 'string' || statePath === '') {
+    throw new StoreError('invalid_request', 'A canonical state path is required.', { status: 400 });
+  }
+  const loaded = await readStateFile(statePath, { io, maxStateBytes });
+  const parsed = parseStateText(loaded.text);
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new StoreError('invalid_state', 'The state file is not a JSON object.', {
+      status: 500,
+    });
+  }
+  let errors;
+  try {
+    errors = validate(parsed);
+  } catch (error) {
+    throw new StoreError('invalid_state', `The state validator failed: ${error.message}`, {
+      status: 500,
+      cause: error,
+    });
+  }
+  if (Array.isArray(errors) && errors.length) {
+    throw new StoreError('invalid_state', 'The state on disk failed full validation.', {
+      status: 500,
+      details: { errors },
+    });
+  }
+  return {
+    statePath,
+    state: parsed,
+    schemaVersion: typeof parsed.schemaVersion === 'string' ? parsed.schemaVersion : null,
+    stateVersion: Number.isSafeInteger(parsed.stateVersion) ? parsed.stateVersion : null,
+    projectId:
+      parsed.project !== null &&
+      typeof parsed.project === 'object' &&
+      typeof parsed.project.id === 'string'
+        ? parsed.project.id
+        : null,
+    fileDigest: loaded.digest,
+    size: loaded.size,
+  };
 }
 
 /**
@@ -2165,6 +2455,194 @@ function createStore({
           directorySync: commit.directorySync,
           renameAttempts: commit.renameAttempts,
           viewStatus: clone(rendered),
+        };
+      });
+    },
+
+    /**
+     * Append one prepared current-work state through this store's own serial
+     * queue, cooperative lock, staging, backup, atomic rename and readback.
+     *
+     * This is an additive adapter, not a new writer kind: it reuses
+     * `commitStateBytes` + `loadDisk` (which is `readStateFile`) with their
+     * existing signatures. It exists because the current-work route must (a)
+     * run the whole decision on the freshly read bytes inside the same serial
+     * gate and (b) adopt the committed bytes afterwards, so later `/api/state`,
+     * review actions and rendering do not treat the service's own write as an
+     * external modification.
+     *
+     * The store deliberately owns no order of its own here. The one shared pure
+     * builder (`buildCurrentWorkWrite`, current-work contract §9/§10.3 rule 9)
+     * receives the freshly read bytes and decides, in the contract's order:
+     * idempotent replay first, then the version/digest CAS, then the record.
+     * Hence `build` is called once and may answer three ways (all documented
+     * shapes below); a second CAS in this layer would move the replay check
+     * behind a comparison the contract puts after it.
+     *
+     * `build(state, context)` returns one of:
+     *   - `{ok: false, code, status?, errors?, details?}` — refused, nothing written;
+     *   - `{ok: true, replayed: true, ...}` — an already-committed receipt; the
+     *     store returns it and writes nothing;
+     *   - `{ok: true, nextState, sidecars?, verify?}` — the store validates,
+     *     stages sidecars, commits and reads back.
+     *
+     * @param {{
+     *   build: Function,
+     *   sidecarRoot?: string,
+     *   maxSidecarBytes?: number
+     * }} input
+     */
+    async saveCurrentWork(input = {}) {
+      const { build, sidecarRoot } = input;
+      if (typeof build !== 'function') {
+        throw new StoreError('invalid_request', 'saveCurrentWork requires a build function.', {
+          status: 400,
+        });
+      }
+      return enqueue(async () => {
+        ensureOpen();
+        ensureWritable();
+        await ensureLock();
+        const loaded = await loadDisk({ forWrite: true });
+        const state = loaded.state;
+        const built = await build(state, { digest: loaded.digest, stateVersion: state.stateVersion });
+        if (!built || typeof built !== 'object' || Array.isArray(built)) {
+          throw new StoreError('not_committed', 'The builder produced no result.', {
+            status: 500,
+            commitStatus: 'not_committed',
+          });
+        }
+        if (built.ok === false) {
+          throw new StoreError(
+            typeof built.code === 'string' ? built.code : 'not_committed',
+            typeof built.message === 'string' ? built.message : 'The current-work write was refused.',
+            {
+              status: Number.isInteger(built.status) ? built.status : 400,
+              commitStatus: 'not_committed',
+              details: built.details,
+            },
+          );
+        }
+        if (built.replayed === true) {
+          return {
+            ok: true,
+            outcome: 'replayed',
+            commitStatus: 'verified_existing_record',
+            replayed: true,
+            state,
+            digest: loaded.digest,
+            stateVersion: state.stateVersion,
+            built,
+          };
+        }
+        const nextState = built.nextState;
+        if (!nextState || typeof nextState !== 'object' || Array.isArray(nextState)) {
+          throw new StoreError('not_committed', 'The builder produced no next state.', {
+            status: 500,
+            commitStatus: 'not_committed',
+          });
+        }
+        // One appended version only; the builder's own assertAppendOnly covers
+        // the record/receipt shape, this keeps the layer's version claim honest.
+        if (nextState.stateVersion !== state.stateVersion + 1) {
+          throw new StoreError(
+            'not_committed',
+            'The builder must advance the state version by exactly one.',
+            { status: 500, commitStatus: 'not_committed' },
+          );
+        }
+        const errors = validateFullState(nextState);
+        if (errors.length) {
+          throw new StoreError(
+            'validation_failed',
+            'The proposed current-work state failed full validation.',
+            { status: 422, details: { errors } },
+          );
+        }
+        const nextBytes = serialiseState(nextState);
+        if (nextBytes.byteLength > maxStateBytes) {
+          throw new StoreError(
+            'state_too_large',
+            `The next state would be ${nextBytes.byteLength} bytes, above ${maxStateBytes}; refusing to write or truncate.`,
+            { status: 413, details: { size: nextBytes.byteLength, maxStateBytes } },
+          );
+        }
+        const nextDigest = sha256Bytes(nextBytes);
+
+        const staged = await stageSidecarFiles(built.sidecars ?? [], {
+          io,
+          root: sidecarRoot,
+          maxSidecarBytes: input.maxSidecarBytes,
+        });
+
+        let commit;
+        try {
+          commit = await commitStateBytes({
+            statePath,
+            oldBytes: loaded.bytes,
+            oldDigest: loaded.digest,
+            oldStat: loaded.stat,
+            oldVersion: state.stateVersion,
+            nextBytes,
+            nextDigest,
+            io,
+            hooks: options.hooks,
+            maxStateBytes,
+            lockCheck: ensureLock,
+            verifyCommitted: (committedState) => {
+              const problems = [];
+              if (committedState.stateVersion !== nextState.stateVersion) {
+                problems.push('post-read stateVersion does not match the next version');
+              }
+              if (typeof built.verify === 'function') {
+                const extra = built.verify(committedState);
+                if (Array.isArray(extra)) problems.push(...extra);
+                else if (extra === false) problems.push('current-work commit verification returned false');
+              }
+              return problems;
+            },
+          });
+        } catch (error) {
+          // Roll back only when the state rename cannot have happened. A
+          // replaced-but-unverifiable or unknown outcome keeps the sidecars:
+          // a committed record may already point at them (orphans are inert).
+          const renamedUnknown =
+            error?.code === 'write_unverified' ||
+            error?.code === 'commit_unknown' ||
+            error?.commitStatus === 'unknown' ||
+            error?.commitStatus === 'replaced_unverified';
+          if (!renamedUnknown) {
+            const removed = await staged.rollback();
+            if (error && typeof error === 'object') {
+              error.details = {
+                ...(error.details ?? {}),
+                sidecarsRolledBack: removed.map((item) => path.basename(item)),
+              };
+            }
+          }
+          applyCommitFailure(error);
+          throw error;
+        }
+
+        cachedState = commit.state;
+        currentDigest = nextDigest;
+        lastAck = lastAckFromLoaded({ digest: nextDigest, size: nextBytes.byteLength, stat: commit.stat });
+        return {
+          ok: true,
+          outcome: 'committed',
+          commitStatus: 'verified',
+          replayed: false,
+          backupPath: commit.backupPath,
+          directorySync: commit.directorySync,
+          renameAttempts: commit.renameAttempts,
+          state: commit.state,
+          nextState,
+          previousStateVersion: state.stateVersion,
+          previousDigest: loaded.digest,
+          digest: nextDigest,
+          stateVersion: commit.state.stateVersion,
+          sidecars: { written: staged.written, reused: staged.reused },
+          built,
         };
       });
     },

@@ -455,6 +455,39 @@ untouched.
   backup filenames/paths. Injecting a store does not implicitly authorize filesystem
   history reads. No new write action, persistence file, watcher or timer is added.
 
+### Saved-version comparison (live 0.2 page)
+
+- The selected complete snapshot is compared with its previous verifiable sample,
+  or the next sample at the earliest endpoint. Direction is always older → newer,
+  independent of slider travel. A gap reports endpoint **net** changes only; it
+  never reconstructs missing intermediate trees or events.
+- `compareSnapshots` compares stable IDs in nodes, edges, intentClaims, evidence,
+  roadmapItems, featureCheckpoints, decisions, proposals, checks, reviews,
+  mapUpdates, conversationCaptures and baselines. It preserves field presence and
+  exact before/after values without mutating either state. Collection/field
+  changes are not product approval, test execution or a source-code comparison.
+- A compact summary remains beside the time axis. Graph cards use text, borders
+  and color for additions/modifications; changed edges use labels and distinct
+  line patterns. Absent endpoint cards are explicitly labelled comparison ghosts
+  (old-only or new-only), not real nodes of the selected snapshot. Card count and
+  selected-version facts remain separate. Retired/superseded status, filtering,
+  folding and view-only movement never constitute node deletion.
+- The independent read-only right region links cards, a searchable/filterable
+  20-item paginated list, previous/next-change navigation and field-level values.
+  Locating a change unfolds its paths and view-only groups; relationship changes
+  locate their related endpoints. Folded branches count changed descendant cards.
+  Only-changes mode retains related context. Disabling graph annotation removes
+  badges, diff lines and ghosts, without disabling the read-only change list.
+- Description/status/intent/evidence links/relationships/planning/continuation
+  remain distinct; new evidence never implies confirmation or completion.
+  Historical or comparison-only content has no confirm/save/restore action.
+  The original editor DOM and draft survive opening/closing comparison and
+  travelling back to Now. Comparison navigation does not change the review URL.
+- Endpoint reads reuse the guarded exact-version/digest snapshot GET, rechecking
+  project, state identity, version, digest and read-only status. A failed endpoint
+  clears annotations; cancelled or late responses cannot replace a newer pair.
+  There is no new route, persisted diff, state write, service control or watcher.
+
 The separately authorized offline `maintain-map.mjs` command (data contract §7.1)
 uses the same state lock and refuses a running service. It adds only bounded
 implementation/evidence annotations and a non-review maintenance record; it is

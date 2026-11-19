@@ -34,6 +34,9 @@ export function renderDirectory(state, options = {}) {
   // Shared card-lines projection (nodeId -> featureProgressCardLines output),
   // passed explicitly so this stringified helper keeps no module dependency.
   const progressByNode = options.progress && typeof options.progress === 'object' ? options.progress : null;
+  // nodeId -> the node's active current work entry ({workId, workTitle, lifecycle}).
+  // Rendered as a word badge (§13.2), never merged into the delivery chip.
+  const workByNode = options.currentWork && typeof options.currentWork === 'object' ? options.currentWork : null;
 
   const renderContent = (content, emptyNote = true) => {
     const statement = String(content?.statement ?? '');
@@ -119,6 +122,8 @@ export function renderDirectory(state, options = {}) {
     const history = `历史已替代 ${historical.filter((claim) => claim.status === 'superseded').length} · 已停止 ${historical.filter((claim) => claim.status === 'retired').length} · 已撤回 ${historical.filter((claim) => claim.status === 'dismissed').length}`;
     const openByTarget = new Map(proposals.filter((proposal) => proposal.status === 'open').map((proposal) => [proposal.targetClaimId, proposal]));
     const lines = node.kind === 'capability' && progressByNode ? progressByNode[node.id] : null;
+    const workEntry = node.kind === 'capability' && workByNode ? workByNode[node.id] : null;
+    const workHtml = workEntry ? `<p class="node-current-work" data-testid="node-current-work"><span class="current-work-badge" data-testid="current-work-badge" data-lifecycle="${esc(workEntry.lifecycle)}" data-work-id="${esc(workEntry.workId)}">本轮在做 · ${esc(({ active: '进行中', paused: '已暂停', ended: '已结束' })[workEntry.lifecycle] ?? workEntry.lifecycle)}</span> <span class="muted">${esc(workEntry.workTitle ?? '')}</span></p>` : '';
     const progressHtml = lines ? `<p class="node-progress" data-testid="node-feature-progress" aria-label="${esc(lines.aria)}">${lines.delivery ? `<span class="delivery-badge" data-testid="node-feature-delivery" data-delivery="${esc(lines.delivery.status)}" data-needs-review="${lines.delivery.needsReview ? 'true' : 'false'}" title="${esc(lines.delivery.title)}">${esc(lines.delivery.text)}</span>` : ''}<span>${esc(lines.line1)}</span><span class="node-progress-next">${esc(lines.line2)}</span></p>` : '';
     const notes = asArray(state?.conversationCaptures).flatMap((capture) => asArray(capture.items))
       .filter((item) => item.nodeId === node.id && item.kind === 'note')
@@ -130,6 +135,7 @@ export function renderDirectory(state, options = {}) {
       </header>
       <p class="intent-summary">${esc(text)}</p>
       <p class="muted">${esc(history)}</p>
+      ${workHtml}
       ${progressHtml}
       ${notes}
       ${active.length
@@ -273,6 +279,16 @@ export function initializeReview(bootstrap, helpers) {
   let currentRoadmapSelection = null;
   let currentRoadmapTrigger = null;
   let historyRoadmapItemId = null;
+  let versionDiffApi = null;
+  // 本轮在做 (§13): its own panel, its own draft, its own phase. None of these
+  // touch the review editor's identity, values or `formRevision`.
+  const workPanel = doc.querySelector('#current-work-panel');
+  const workPanelTitle = doc.querySelector('#current-work-panel-title');
+  const workPanelBody = doc.querySelector('#current-work-panel-body');
+  const workClose = doc.querySelector('#current-work-close');
+  let workView = null; // {workId, mode, phase, preview, form, operation, trigger, error}
+  let workFilterNodeId = null;
+  let workHistoryOpen = false;
   const previewActions = new Set(['split_candidate', 'discard_candidate', 'confirm_candidate', 'accept_proposal', 'retire_claim']);
 
   function make(tag, attributes, ...children) {
@@ -386,6 +402,609 @@ export function initializeReview(bootstrap, helpers) {
     return map;
   }
 
+  // -------------------------------------------------------------------------
+  // 本轮在做 (§13): one panel, its own draft, its own phase machine.
+  // -------------------------------------------------------------------------
+  //
+  // Invariants kept by every function below:
+  //  * review DOM is never destroyed or pre-filled by a work action, and
+  //    `formRevision` is never bumped here;
+  //  * the review URL (`?claim=`, `?proposal=`, hash) is never rewritten by a
+  //    work action; only `?work=` is added/removed, and the review params are
+  //    left exactly as they were;
+  //  * `saved` is only entered after a readback, never after sending a request;
+  //  * the client echoes the server's `previewContentDigest` verbatim and never
+  //    computes, compares or re-derives a digest of its own;
+  //  * one `operationId` per click intent, reused across retries of that click.
+
+  function clientOperationId() {
+    const cryptoApi = typeof crypto !== 'undefined' ? crypto : null;
+    if (cryptoApi && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID();
+    const bytes = new Array(16);
+    for (let index = 0; index < 16; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.map((value) => value.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  function workIndexFor(state) {
+    const api = helpers.featureProgressApi;
+    if (!api || !state || typeof api.deriveCurrentWorkIndex !== 'function') return null;
+    try { return api.deriveCurrentWorkIndex(state, { fingerprints: featureFingerprintsFor(state) }); } catch { return null; }
+  }
+
+  // nodeId -> {workId, workTitle, lifecycle} for the card badge. Only the live
+  // state is used: a historical snapshot never shows "what we are doing now".
+  function currentWorkByNode(state) {
+    const index = workIndexFor(state);
+    if (!index || !Array.isArray(index.entries)) return null;
+    const rank = { active: 0, paused: 1, ended: 2 };
+    const map = {};
+    for (const entry of index.entries) {
+      if (!entry || typeof entry.nodeId !== 'string') continue;
+      const best = map[entry.nodeId];
+      if (best && (rank[entry.lifecycle] ?? 3) >= (rank[best.lifecycle] ?? 3)) continue;
+      map[entry.nodeId] = { workId: entry.workId, workTitle: entry.workTitle ?? '', lifecycle: entry.lifecycle ?? 'ended' };
+    }
+    return map;
+  }
+
+  function workProjectionFor(state, workId) {
+    const api = helpers.featureProgressApi;
+    if (!api || !state || typeof api.currentWork !== 'function') return null;
+    let view;
+    try { view = api.currentWork(state, workId, { fingerprints: featureFingerprintsFor(state) }); } catch { return null; }
+    if (!view || view.found !== true) return null;
+    let changes = null;
+    if (typeof api.deriveWorkChanges === 'function') {
+      try { changes = api.deriveWorkChanges(state, workId, { fingerprints: featureFingerprintsFor(state) }); } catch { changes = null; }
+    }
+    const node = asArray(state.nodes).find((item) => item.id === view.nodeId);
+    const record = view.currentRecord && typeof view.currentRecord === 'object' ? view.currentRecord : {};
+    return {
+      workId: view.workId,
+      nodeId: view.nodeId,
+      featureLabel: node && typeof node.label === 'string' ? node.label : '',
+      workTitle: view.workTitle ?? '',
+      operation: view.operation,
+      lifecycle: view.lifecycle ?? { status: 'ended', endedReason: null, endedNote: null },
+      objective: view.content?.objective ?? null,
+      scope: view.content?.scope ?? [],
+      exclusions: view.content?.exclusions ?? [],
+      acceptanceCriteria: view.content?.acceptanceCriteria ?? [],
+      selection: view.content?.selection ?? null,
+      upper: view.content?.upper ?? null,
+      upperResolved: changes ? changes.upper : null,
+      resume: view.content?.resume ?? null,
+      sourceRefs: asArray(record.sourceRefs),
+      contextStatus: view.contextStatus,
+      contentComparable: Boolean(changes && changes.contentComparable),
+      supportContentComparable: Boolean(changes && changes.supportContentComparable),
+      supportDigestSource: changes?.supportDigestSource ?? null,
+      supportDigestMissing: asArray(changes?.supportDigestMissing),
+      changes: changes ? changes.changes : [],
+      changesTruncated: Boolean(changes && changes.changesTruncated),
+      adopted: changes ? changes.adopted : [],
+      currentRecordId: view.currentRecordId,
+      revisionCount: view.revisionCount,
+      updatedAt: typeof record.createdAt === 'string' ? record.createdAt : '',
+    };
+  }
+
+  // A saved layer observation is `{state:'found', ref, observed:{...}}`. The write
+  // content carries `{state, ref, origin}`; the origin comes from the read model,
+  // which echoes the saved origin rather than re-deriving a "plausible" one.
+  function originFromSpec(source) {
+    if (!source || typeof source !== 'object') return undefined;
+    if (source.origin && typeof source.origin === 'object') return source.origin;
+    if (source.observed && typeof source.observed === 'object') return source.observed.origin ?? undefined;
+    return undefined;
+  }
+
+  function submissionLayer(readLayer, savedLayer) {
+    const read = readLayer && typeof readLayer === 'object' ? readLayer : null;
+    const saved = savedLayer && typeof savedLayer === 'object' ? savedLayer : null;
+    const state = saved?.state ?? read?.state ?? null;
+    if (state === 'gap') return saved?.reason ? { state: 'gap', reason: saved.reason } : { state: 'gap' };
+    if (state === 'unavailable') return { state: 'unavailable', ref: read?.ref ?? saved?.ref ?? null };
+    if (state !== 'found') return null;
+    const origin = originFromSpec(read) ?? originFromSpec(saved);
+    const layer = { state: 'found', ref: read?.ref ?? saved?.ref ?? null };
+    if (origin) layer.origin = origin;
+    return layer;
+  }
+
+  function workHistoryRecords(state, workId) {
+    const records = [];
+    const seen = new Set();
+    for (const record of asArray(state?.featureCheckpoints)) {
+      if (!record || !record.workContext || record.workContext.workId !== workId) continue;
+      const workTitle = typeof record.workContext.workTitle === 'string' ? record.workContext.workTitle : '';
+      records.push({
+        id: record.id, operation: record.workContext.operation ?? null,
+        createdAt: record.createdAt ?? '', workTitle,
+        nodeId: record.nodeId ?? null,
+      });
+      seen.add(record.id);
+    }
+    return records.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+  }
+
+  function workSection() {
+    const state = current.state;
+    const nodeId = panelTarget?.type === 'node' ? panelTarget.nodeId : null;
+    const index = workIndexFor(state);
+    const container = make('section', { class: 'current-work-panel', 'data-testid': 'current-work-panel-directory' });
+    container.append(make('p', { class: 'eyebrow', text: '本轮在做 · 保存记录（非评审、非交付、非授权）' }));
+    if (!index) {
+      container.append(paragraph('muted', '本页未能派生本轮工作索引；这是读取能力缺口，不表示没有保存过工作。'));
+      return container;
+    }
+    const entries = asArray(index.entries).filter((entry) => entry && (!nodeId || entry.nodeId === nodeId));
+    if (!entries.length) {
+      container.append(paragraph('muted', nodeId
+        ? '这个能力还没有保存过的本轮工作。首页任务不是本轮在做。'
+        : '还没有保存过的本轮工作。'));
+      return container;
+    }
+    const renderEntry = typeof helpers.renderCurrentWorkEntry === 'function' ? helpers.renderCurrentWorkEntry : null;
+    if (!renderEntry) {
+      container.append(paragraph('muted', '本页缺少本轮工作渲染器：只显示数量。'));
+      container.append(paragraph('muted', `保存过 ${entries.length} 条本轮工作。`));
+      return container;
+    }
+    const list = make('ul', { class: 'current-work-list' });
+    for (const entry of entries) {
+      list.insertAdjacentHTML('beforeend', renderEntry(entry, {
+        selected: workView?.workId === entry.workId && workView?.mode !== 'panel',
+      }));
+    }
+    container.append(list);
+    if (index.truncated) container.append(paragraph('muted', `索引已截断：还有 ${index.omitted} 条未显示。`));
+    return container;
+  }
+
+  function workPhaseText() {
+    const phase = workView?.phase ?? 'idle';
+    return {
+      idle: '就绪：尚未生成预览。', previewing: '正在生成预览（不写任何文件）…',
+      previewReady: '预览已生成：核对差异后再保存。', saving: '正在保存…',
+      saved: '已保存并回读。', conflict: '保存冲突：请重新读取后重试。',
+      failed: '操作失败：草稿仍保留。', unknown: '结果未知：正在独立读取状态。',
+      status: '正在读取保存状态…', notCommitted: '未写入：可以带着同一操作重新保存。',
+    }[phase] ?? '就绪。';
+  }
+
+  // The panel region is a single column: at most one of the review form, the
+  // roadmap panel and the work panel is visible, and this is the only place that
+  // decides between them after the first render.
+  function syncPanelRegion() {
+    const host = doc.querySelector('#review-current');
+    if (!host) return;
+    if (workView) { host.hidden = true; return; }
+    if (roadmapPanel && !roadmapPanel.hidden) { host.hidden = true; return; }
+    host.hidden = Boolean(historySelection);
+  }
+
+  function renderWorkPanel() {
+    if (!workPanel || !workPanelBody) return;
+    if (!workView) { workPanel.hidden = true; workPanelBody.replaceChildren(); workCloseState(true); syncPanelRegion(); return; }
+    workPanel.hidden = false;
+    const historical = workView.mode === 'history' || historySelection !== null;
+    const work = workView.work ?? null;
+    if (workPanelTitle) {
+      workPanelTitle.textContent = work ? `本轮在做 · ${work.workTitle || '（未命名）'}` : '本轮在做';
+    }
+    const parts = [];
+    parts.push(`<div class="current-work-actions"><button type="button" data-work-action="back" data-testid="current-work-back">回到现在</button></div>`);
+    if (!work) {
+      parts.push('<p class="current-work-muted" data-readonly="true">当前状态里没有这条本轮工作（可能已被更高版本替换，或从未保存）。</p>');
+    } else if (workView.mode === 'editor') {
+      parts.push(helpers.renderCurrentWorkEditor(work, { operation: workView.operation, phase: workView.phase }));
+      if (workView.preview) parts.push(helpers.renderCurrentWorkPreview(workView.preview));
+    } else if (workView.mode === 'history' || workHistoryOpen) {
+      parts.push(helpers.renderCurrentWorkHistory({ historyRecords: workView.records ?? [] }));
+      parts.push(helpers.renderCurrentWorkDetail(work, { historical: true }));
+    } else {
+      parts.push(helpers.renderCurrentWorkDetail(work, { historical }));
+    }
+    parts.push(`<p class="current-work-meta" data-testid="current-work-phase" data-phase="${String(workView.phase ?? 'idle')}">${workPhaseText()}</p>`);
+    if (workView.message) parts.push(`<p class="current-work-warning" data-testid="current-work-message">${String(workView.message)}</p>`);
+    workPanelBody.innerHTML = parts.join('');
+    workCloseState(historical);
+    panel.setAttribute('aria-labelledby', 'current-work-panel-title');
+    syncPanelRegion();
+  }
+
+  function workCloseState(hidden) {
+    if (workClose) workClose.hidden = hidden !== false;
+  }
+
+  function setWorkQuery(workId) {
+    try {
+      const url = new URL(location.href);
+      if (workId) url.searchParams.set('work', workId); else url.searchParams.delete('work');
+      const next = url.pathname + url.search + url.hash;
+      if (next === location.pathname + location.search + location.hash) return;
+      history.pushState(null, '', next);
+    } catch { /* Embedded viewers can restrict history. */ }
+  }
+
+  function openWorkUri(workId, mode = 'detail', options = {}) {
+    if (historySelection) return;
+    versionDiffApi?.close();
+    if (currentRoadmapSelection || roadmapIndexOpen) closeRoadmapPanel({ focus: false });
+    const work = workProjectionFor(current.state, workId);
+    workHistoryOpen = false;
+    workView = {
+      workId, mode, phase: 'idle', preview: null, operation: null,
+      work, records: workHistoryRecords(current.state, workId),
+      trigger: options.trigger ?? null, message: null,
+    };
+    renderWorkPanel();
+    if (options.url !== false) setWorkQuery(workId);
+    if (options.focus !== false) workPanelTitle?.focus({ preventScroll: true });
+  }
+
+  function closeWorkPanel(options = {}) {
+    if (!workView) return;
+    const trigger = workView.trigger;
+    const workId = workView.workId;
+    workView = null;
+    workHistoryOpen = false;
+    if (workPanel) workPanel.hidden = true;
+    if (workPanelBody) workPanelBody.replaceChildren();
+    panel.setAttribute('aria-labelledby', 'review-panel-title');
+    setWorkQuery(null);
+    renderDirectoryHosts();
+    if (options.focus === false) return;
+    const entryButton = workId
+      ? doc.querySelector(`[data-work-id="${cssEscape(workId)}"][data-testid="current-work-entry"]`)
+      : null;
+    const target = (trigger && trigger.isConnected ? trigger : null)
+      || (entryButton && entryButton.isConnected ? entryButton : null)
+      || doc.querySelector('#review-panel-title');
+    target?.focus({ preventScroll: true });
+  }
+
+  function readWorkForm() {
+    const form = workPanelBody?.querySelector('form[data-form="current-work"]');
+    if (!form) return null;
+    const field = (name) => form.querySelector(`[data-field="${name}"]`);
+    const text = (name) => String(field(name)?.value ?? '');
+    const lines = (name) => text(name).split('\n').map((line) => line.trim()).filter(Boolean);
+    const authorization = [...form.querySelectorAll('[data-field="authorizationRequired"]')]
+      .filter((box) => box.checked).map((box) => box.value);
+    const selection = field('selectionKind')?.value ?? null;
+    const selectionRefs = lines('selectionSourceRefs');
+    return {
+      workTitle: text('workTitle').trim(),
+      objective: text('objective').trim(),
+      scope: lines('scope'),
+      exclusions: lines('exclusions'),
+      acceptanceCriteria: lines('acceptanceCriteria'),
+      sourceRefs: lines('sourceRefs'),
+      stopPoint: text('stopPoint').trim(),
+      nextStep: text('nextStep').trim(),
+      responsibility: field('responsibility')?.value || workView.work?.resume?.responsibility || 'agent',
+      authorizationRequired: authorization,
+      endedReason: field('endedReason')?.value ?? null,
+      endedNote: text('endedNote').trim(),
+      selectionKind: selection,
+      selectionSourceRefs: selectionRefs,
+    };
+  }
+
+  // Builds the COMPLETE write content (§9) from the editor + the saved projection.
+  // Nothing is merged server-side: `upper`/`selection`/`adoptedBasis` are echoed so
+  // the human is not silently re-deciding anything, but they are NOT the write
+  // authority — the server re-resolves them against the freshly read state (§10.4).
+  function buildWorkContent(operation) {
+    const work = workView.work;
+    const form = readWorkForm();
+    if (!form) throw new Error('表单不存在，请重新打开编辑本轮工作。');
+    const businessReadOnly = operation === 'pause' || operation === 'resume' || operation === 'end';
+    const base = {
+      version: 1,
+      nodeId: work.nodeId,
+      operation,
+      workId: work.workId,
+      predecessorRecordId: work.currentRecordId ?? null,
+    };
+    const saved = {
+      workTitle: work.workTitle ?? '',
+      objective: work.objective ?? '',
+      scope: asArray(work.scope).map((item) => `${item && typeof item === 'object' ? item.statement ?? '' : item}`).filter(Boolean),
+      exclusions: asArray(work.exclusions).map((item) => `${item && typeof item === 'object' ? item.statement ?? '' : item}`).filter(Boolean),
+      acceptanceCriteria: asArray(work.acceptanceCriteria).map((item) => `${item && typeof item === 'object' ? item.statement ?? '' : item}`).filter(Boolean),
+      resume: work.resume ?? null,
+      selection: work.selection ?? null,
+      sourceRefs: asArray(work.sourceRefs),
+    };
+    const used = businessReadOnly ? saved : form;
+    const resume = used.resume ?? {
+      stopPoint: used.stopPoint, nextStep: used.nextStep || null,
+      responsibility: used.responsibility, authorizationRequired: used.authorizationRequired,
+    };
+    const selection = saved.selection ?? { kind: 'agent_proposed_unselected', sourceRefs: [] };
+    const lifecycle = { endedReason: null, endedNote: null };
+    if (operation === 'end') {
+      lifecycle.endedReason = form.endedReason || 'other';
+      lifecycle.endedNote = form.endedNote || null;
+    }
+    return {
+      ...base,
+      workTitle: used.workTitle,
+      objective: used.objective,
+      scope: used.scope.map((statement) => ({ statement })),
+      exclusions: used.exclusions.map((statement) => ({ statement })),
+      acceptanceCriteria: used.acceptanceCriteria.map((statement) => ({ statement })),
+      selection,
+      upper: {
+        productGoal: submissionLayer(work.upperResolved?.productGoal, work.upper?.productGoal),
+        stage: submissionLayer(work.upperResolved?.stage, work.upper?.stage),
+        openUserPaths: asArray(work.upperResolved?.openUserPaths ?? work.upper?.openUserPaths)
+          .map((layer, index) => submissionLayer(layer, asArray(work.upper?.openUserPaths)[index]))
+          .filter(Boolean),
+      },
+      lifecycle,
+      resume,
+      source: 'live_review',
+      sourceRefs: used.sourceRefs ?? saved.sourceRefs,
+      basisRefs: [],
+      adoptedBasis: asArray(work.adopted).map((entry) => ({ claimId: entry.claimId, writeSnapshot: true })),
+    };
+  }
+
+  function setWorkPhase(phase, message) {
+    if (!workView) return;
+    workView.phase = phase;
+    if (message !== undefined) workView.message = message;
+    renderWorkPanel();
+  }
+
+  function openWorkDetail(workId, options = {}) {
+    openWorkUri(workId, 'detail', options);
+  }
+
+  function openWorkEditor(workId, operation, options = {}) {
+    openWorkUri(workId, 'editor', options);
+    if (!workView) return;
+    workView.operation = operation;
+    workView.phase = 'idle';
+    workView.preview = null;
+    workView.message = null;
+    renderWorkPanel();
+    workPanelBody?.querySelector('form[data-form="current-work"] button[data-work-action="preview"]')?.focus({ preventScroll: true });
+  }
+
+  async function previewWorkSave() {
+    if (!workView || workView.phase === 'previewing' || workView.phase === 'saving') return;
+    let content;
+    try { content = buildWorkContent(workView.operation ?? 'adjust'); } catch (error) {
+      setWorkPhase('failed', `无法收集表单：${error.message}`);
+      return;
+    }
+    if (!current.writable || writeBlocked) {
+      setWorkPhase('failed', '当前只读或已停写，不能生成预览。');
+      return;
+    }
+    setWorkPhase('previewing');
+    try {
+      const data = await postJson('/api/current-work/preview', {
+        projectId,
+        expectedStateVersion: current.stateVersion,
+        expectedDigest: current.fileDigest,
+        content,
+      });
+      const preview = data.preview ?? data;
+      workView.preview = {
+        operation: preview.operation ?? workView.operation ?? 'adjust',
+        workId: preview.workId ?? workView.workId,
+        previewId: preview.previewId ?? null,
+        previewContentDigest: preview.previewContentDigest ?? null,
+        expiresAt: preview.expiresAt ?? null,
+        diff: preview.diff ?? [],
+        sidecarPlan: preview.sidecarPlan ?? [],
+        notes: preview.notes ?? [],
+      };
+      workView.operationId = workView.operationId ?? null;
+      setWorkPhase('previewReady', null);
+    } catch (error) {
+      setWorkPhase('failed', `预览失败：${error.message}`);
+      handleError(error, { quiet: true });
+    }
+  }
+
+  async function saveWork() {
+    if (!workView || !workView.preview) return;
+    if (workView.phase === 'saving') return;
+    const preview = workView.preview;
+    if (!preview.previewId || !preview.previewContentDigest) {
+      setWorkPhase('failed', '预览句柄或预览摘要缺失：请重新生成预览。');
+      return;
+    }
+    // One operationId per click intent: the same save (including a retry after an
+    // unknown outcome) reuses it so the server can answer with the same receipt.
+    workView.operationId = workView.operationId ?? clientOperationId();
+    setWorkPhase('saving');
+    let data = null;
+    try {
+      data = await postJson('/api/current-work/save', {
+        projectId,
+        previewId: preview.previewId,
+        previewContentDigest: preview.previewContentDigest,
+        operationId: workView.operationId,
+        authorizationRef: 'live_review_human',
+        expectedStateVersion: current.stateVersion,
+        expectedDigest: current.fileDigest,
+      });
+    } catch (error) {
+      const code = error.code || '';
+      if (code === 'state_conflict' || code === 'preview_expired' || code === 'preview_consumed' || code === 'preview_mismatch') {
+        setWorkPhase('conflict', `保存未写入：${error.message}（草稿与预览已失效，请刷新后重新预览）`);
+        return;
+      }
+      const outcome = error.body?.commitStatus ?? error.body?.outcome ?? null;
+      if (outcome === 'unknown' || outcome === 'unverified' || code === 'commit_unknown') {
+        setWorkPhase('unknown', `保存结果未知：${error.message}`);
+        await readWorkStatus();
+        return;
+      }
+      setWorkPhase('failed', `保存失败：${error.message}（草稿仍保留）`);
+      return;
+    }
+    if (!data || data.ok !== true || data.commitStatus !== 'committed' || !data.receiptId) {
+      setWorkPhase('unknown', '保存响应没有给出可核对的回执：不宣称已保存，正在独立读取状态。');
+      await readWorkStatus();
+      return;
+    }
+    applySavedReceipt(data);
+  }
+
+  function applySavedReceipt(data) {
+    const resultVersion = data.resultingStateVersion;
+    const resultDigest = data.resultingDigest ?? null;
+    const readback = data.readback && typeof data.readback === 'object' ? data.readback : null;
+    const verified = readback?.verified === true;
+    // A save is only reported as persisted after the response's own readback:
+    // a receipt without a readback, or one whose readback does not hold the new
+    // record, is "unknown" and goes to the independent status read (§11/§13.3).
+    if (resultVersion === undefined || resultVersion === null || !readback) {
+      setWorkPhase('unknown', '回执缺少写入后的状态版本或回读结果：不宣称已保存，正在独立读取状态。');
+      void readWorkStatus();
+      return;
+    }
+    if (verified !== true && readback.recordPresent !== true) {
+      setWorkPhase('unknown', '回执已提交，但回读未确认记录存在：正在独立读取状态。');
+      void readWorkStatus();
+      return;
+    }
+    current.stateVersion = resultVersion;
+    if (resultDigest) current.fileDigest = resultDigest;
+    if (typeof data.observedStateVersion === 'number' && data.observedStateVersion > (current.stateVersion ?? 0)) {
+      current.stateVersion = data.observedStateVersion;
+    }
+    workView.operationId = null;
+    workView.preview = null;
+    // A commit is only reported once the receipt and the readback agree it was
+    // written; a contradictory readback is not silently upgraded to "saved".
+    setWorkPhase('saved', verified
+      ? `已保存并回读（记录 ${data.recordId ?? '未记录'}，状态版本 ${resultVersion}）。`
+      : `已保存，回读未给出验证标记（记录 ${data.recordId ?? '未记录'}，状态版本 ${resultVersion}）。`);
+    void afterWorkWrite();
+  }
+
+  async function afterWorkWrite() {
+    const message = workView?.phase === 'saved' ? (workView.message || '本轮工作已保存并回读。') : null;
+    // The saved record is this work's new revision. Stay on the work panel and
+    // re-read it, so "历次修订" and the saved state are reachable without a reload;
+    // the announcement goes to the existing review status region below.
+    if (workView) {
+      workView.mode = 'detail';
+      workView.phase = 'idle';
+      workView.preview = null;
+      workView.operation = null;
+      workView.operationId = null;
+      workView.message = null;
+      workView.records = workHistoryRecords(current.state, workView.workId);
+      workView.work = workProjectionFor(current.state, workView.workId);
+      renderWorkPanel();
+    }
+    setWorkQuery(null);
+    renderDirectoryHosts();
+    // The result is announced in the existing status region: a save is never a
+    // silent change.
+    setStatus(`${message ? `${message} ` : ''}评审草稿与目标未改动。`, { focus: true });
+    const shown = Boolean(workView);
+    await refreshState({ quiet: true });
+    if (shown && workView) {
+      workView.records = workHistoryRecords(current.state, workView.workId);
+      workView.work = workProjectionFor(current.state, workView.workId);
+      renderWorkPanel();
+    }
+  }
+
+  async function readWorkStatus() {
+    if (!workView) return;
+    const workId = workView.workId;
+    setWorkPhase('status', '保存结果未知：正在独立读取状态（不重复写入）。');
+    try {
+      const operationId = workView.operationId ?? null;
+      const statusQuery = `workId=${encodeURIComponent(workId)}${operationId ? `&operationId=${encodeURIComponent(operationId)}` : ''}`;
+      const response = await fetch(`/api/current-work/status?${statusQuery}`, {
+        credentials: 'same-origin', headers: { Accept: 'application/json' },
+      });
+      let body = null;
+      try { body = await response.json(); } catch { body = null; }
+      if (!response.ok || body?.ok === false) throw new Error(body?.error?.message || `读取状态失败（HTTP ${response.status}）`);
+      // §11.3: `found` is the receipt lookup for this operation, never a guess.
+      if (body?.found === true && body.integrity !== 'broken') {
+        const receiptId = body.receiptId ?? null;
+        const recordId = body.recordId ?? null;
+        workView.operationId = null;
+        workView.preview = null;
+        setWorkPhase('saved', `状态读取确认写入已提交（记录 ${recordId ?? '未记录'}${receiptId ? `，回执 ${receiptId}` : ''}）。`);
+        await afterWorkWrite();
+        return;
+      }
+      if (body?.found === true && body.integrity === 'broken') {
+        setWorkPhase('unknown', '状态读取发现回执存在但记录对不上（完整性异常）：请人工核对项目状态，不要重复提交。');
+        return;
+      }
+      setWorkPhase('notCommitted', '状态读取没有找到这次操作的记录：本次没有写入。可以重新生成预览后再保存。');
+    } catch (error) {
+      setWorkPhase('unknown', `无法读取保存状态：${error.message}。请刷新页面并用项目状态核对；不要重复提交。`);
+    }
+  }
+
+  function openWorkHistory(workId) {
+    if (!workView || workView.workId !== workId) openWorkUri(workId, 'history');
+    workHistoryOpen = true;
+    workView.mode = 'history';
+    workView.records = workHistoryRecords(current.state, workId);
+    if (workView.work) workView.work = workProjectionFor(current.state, workId);
+    renderWorkPanel();
+    if (workPanel) workPanel.hidden = false;
+    syncPanelRegion();
+    workPanelBody?.querySelector('[data-testid="current-work-history"]')?.setAttribute('tabindex', '-1');
+    workPanelTitle?.focus({ preventScroll: true });
+  }
+
+  function backToNow() {
+    if (!workView) return;
+    workHistoryOpen = false;
+    workView.mode = 'detail';
+    workView.phase = 'idle';
+    workView.preview = null;
+    workView.operation = null;
+    workView.message = null;
+    workView.records = workHistoryRecords(current.state, workView.workId);
+    workView.work = workProjectionFor(current.state, workView.workId);
+    renderWorkPanel();
+    if (workPanel) workPanel.hidden = false;
+    syncPanelRegion();
+    workPanelTitle?.focus({ preventScroll: true });
+  }
+
+  function filterRelatedWork(nodeId) {
+    if (!nodeId) { exitWorkFilter(); return; }
+    workFilterNodeId = nodeId;
+    const workEntry = currentWorkByNode(current.state)?.[nodeId] ?? null;
+    suppressGraphHook = true;
+    try { graphApi?.selectNode(nodeId, true); } finally { suppressGraphHook = false; }
+    if (workEntry) openWorkDetail(workEntry.workId, { focus: false });
+    setStatus('只看与本轮工作相关的能力；退出筛选回到原来的视图。', { focus: false });
+  }
+
+  function exitWorkFilter(focus = true) {
+    workFilterNodeId = null;
+    renderDirectoryHosts();
+    const target = doc.querySelector('#graph-viewport') || doc.querySelector('#intent-directory-title');
+    if (focus) target?.focus({ preventScroll: true });
+  }
+
   function featureProgressDetailFor(state, nodeId) {
     const api = helpers.featureProgressApi;
     if (!api || !state || typeof nodeId !== 'string') return null;
@@ -458,10 +1077,9 @@ export function initializeReview(bootstrap, helpers) {
     storageKey: 'product-continuity:canvas:' + (bootstrap.projectId || 'default'),
     onSelect(nodeId) {
       if (!graphReady || suppressGraphHook) return;
-      if (historySelection) { showHistoryNode(nodeId); return; }
+      if (versionDiffApi?.selectNode(nodeId)) return;
+      if (historySelection) { versionDiffApi?.close(); showHistoryNode(nodeId); return; }
       if (currentRoadmapSelection || roadmapIndexOpen) closeRoadmapPanel({focus:false});
-      const params = new URLSearchParams(location.search);
-      if (params.get('claim') || params.get('proposal')) updateQuery(null, null, 'push');
       openNode(nodeId, { focus: true, fromGraph: true });
     },
   });
@@ -492,48 +1110,87 @@ export function initializeReview(bootstrap, helpers) {
     },
   });
 
-  graphTimeApi = helpers.initializeGraphTime?.(bootstrap, {
-    canNavigate() { return !busy; },
-    async loadSnapshot(sample, signal) {
-      const params = new URLSearchParams({version:String(sample.stateVersion),digest:sample.digest});
-      try {
-        const response = await fetch('/api/snapshot?' + params, {credentials:'same-origin',headers:{Accept:'application/json'},signal});
-        const body = await response.json();
-        if (!response.ok || body?.ok === false) {
-          const error = new Error(body?.error?.message || '无法读取历史版本');
-          error.status = response.status; error.code = body?.error?.code; error.body = body;
-          throw error;
-        }
-        return body;
-      } catch (error) {
-        if (error.name !== 'AbortError' && error.status === 403) handleError(error);
+  async function loadVersionSnapshot(sample, signal) {
+    const params = new URLSearchParams({version:String(sample.stateVersion),digest:sample.digest});
+    try {
+      const response = await fetch('/api/snapshot?' + params, {credentials:'same-origin',headers:{Accept:'application/json'},signal});
+      const body = await response.json();
+      if (!response.ok || body?.ok === false) {
+        const error = new Error(body?.error?.message || '无法读取历史版本');
+        error.status = response.status; error.code = body?.error?.code; error.body = body;
         throw error;
       }
+      if (body.sample?.stateVersion !== sample.stateVersion || body.fileDigest !== sample.digest
+        || body.state?.stateVersion !== sample.stateVersion || body.state?.project?.id !== projectId
+        || body.stateIdentity !== stateIdentity || body.writable !== false) throw new Error('历史快照身份不匹配');
+      return body;
+    } catch (error) {
+      if (error.name !== 'AbortError' && error.status === 403) handleError(error);
+      throw error;
+    }
+  }
+  versionDiffApi = helpers.initializeVersionDiff?.(helpers, {
+    canOpen() {return !busy;},
+    current() {return {state:current.state,fileDigest:current.fileDigest};},
+    loadSnapshot:loadVersionSnapshot,
+    graphData:graphDataFromState,
+    paint(graph) {
+      if (historySelection && !historySelection.state) return;
+      graphApi?.refresh(graph || graphDataFromState(historySelection?.state || current.state),{updateUrl:!historySelection,stable:true});
     },
+    openPanel() {
+      if (busy) return;
+      if (!historySelection) saveDraft();
+      doc.querySelector('#review-current').hidden=true;
+      doc.querySelector('#history-panel').hidden=true;
+      if(roadmapPanel)roadmapPanel.hidden=true;
+      panel.setAttribute('aria-label','版本差异只读详情');
+      panel.removeAttribute('aria-labelledby');
+    },
+    closePanel() {
+      panel.removeAttribute('aria-label');
+      doc.querySelector('#history-panel').hidden=!historySelection;
+      doc.querySelector('#review-current').hidden=Boolean(historySelection);
+      panel.setAttribute('aria-labelledby',historySelection?'history-panel-title':'review-panel-title');
+      if(!historySelection)renderCurrentRoadmapPanel();
+    },
+    locate(ids) {
+      suppressGraphHook=true;
+      try {graphApi?.locateNodes(ids);} finally {suppressGraphHook=false;}
+    },
+    inspect(id) {if(historySelection)showHistoryNode(id);else openNode(id);},
+  });
+  graphTimeApi = helpers.initializeGraphTime?.(bootstrap, {
+    canNavigate() { return !busy; },
+    loadSnapshot:loadVersionSnapshot,
+    compare(sample,neighbor,result) {void versionDiffApi?.update(sample,neighbor,result);},
     showLoading(sample) {
       if (!historySelection) {
         saveDraft(); currentGraphView = graphApi?.getViewState();
         currentPanelScroll = panel.scrollTop;
         currentCrossLinks = doc.querySelector('#graph-cross').checked;
       }
+      versionDiffApi?.close();
       historySelection = {sample,state:null,loading:true};
+      versionDiffApi?.unavailable();
       setHistoryVisibility(true);
       if (roadmapPanel) roadmapPanel.hidden = true;
       doc.querySelector('#review-current').hidden = true;
       doc.querySelector('#history-panel').hidden = false;
       panel.setAttribute('aria-labelledby','history-panel-title');
-      graphApi?.refresh(graphDataFromState(null),{updateUrl:false});
+      graphApi?.refresh(graphDataFromState(null),{updateUrl:false,stable:true});
       showHistoryNode(null, '正在读取完整快照；当前草稿已保留，尚未显示历史树。');
       updateHeader(); updateSubmitEnabled();
     },
     showSnapshot(result) {
       historySelection = result;
       historyRoadmapItemId = null;
-      graphApi?.refresh(graphDataFromState(result.state),{updateUrl:false,fit:true});
+      graphApi?.refresh(graphDataFromState(result.state),{updateUrl:false,stable:true,expand:true,selectedId:currentGraphView?.selectedId});
       showHistoryNode(graphApi?.getViewState().selectedId);
     },
     showUnavailable(sample) {
       historySelection = {sample,state:null,loading:false};
+      versionDiffApi?.unavailable();
       graphApi?.refresh(graphDataFromState(null),{updateUrl:false});
       showHistoryNode(null,'历史版本缺失或无法核验，不显示其它树代替。可以重新选点或回到现在。');
     },
@@ -541,8 +1198,9 @@ export function initializeReview(bootstrap, helpers) {
       // A focused historical node will be replaced by refresh(). Its focus
       // restoration can auto-pan the newly restored current tree. Move focus
       // to the persistent time axis first, without recentering or scrolling.
-      if (doc.activeElement?.closest?.('#history-panel,#graph-world .graph-node')) doc.querySelector('#graph-time-range')?.focus({preventScroll:true});
+      if (doc.activeElement?.closest?.('#history-panel,#version-diff-panel,#graph-world [data-node-id]')) doc.querySelector('#graph-time-range')?.focus({preventScroll:true});
       historySelection = null;
+      versionDiffApi?.close();
       historyRoadmapItemId = null;
       setHistoryVisibility(false);
       const crossLinks = doc.querySelector('#graph-cross');
@@ -642,6 +1300,7 @@ export function initializeReview(bootstrap, helpers) {
 
   function renderCurrentRoadmapPanel() {
     if (!roadmapPanel || !roadmapPanelBody) return;
+    if(versionDiffApi?.isOpen())return;
     if (historySelection || (!currentRoadmapSelection && !roadmapIndexOpen)) {
       roadmapPanel.hidden = true;
       roadmapPanelBody.replaceChildren();
@@ -662,6 +1321,7 @@ export function initializeReview(bootstrap, helpers) {
       ? helpers.renderRoadmapFilters() + helpers.renderRoadmapIndex(view, { filter: roadmapFilter, progress: featureProgressSummaryFor(current.state) })
       : helpers.renderRoadmapDetail(current.state, view, currentRoadmapSelection, { progressHtml });
     for (const control of roadmapPanelBody.querySelectorAll('[data-roadmap-filter]')) control.setAttribute('aria-pressed',String(control.dataset.roadmapFilter === roadmapFilter));
+    syncPanelRegion();
   }
 
   function setRoadmapFilter(value) {
@@ -681,9 +1341,9 @@ export function initializeReview(bootstrap, helpers) {
     currentRoadmapTrigger = null;
     if (roadmapPanel) roadmapPanel.hidden = true;
     if (roadmapPanelBody) roadmapPanelBody.replaceChildren();
-    doc.querySelector('#review-current').hidden = false;
     panel.setAttribute('aria-labelledby','review-panel-title');
     renderRoadmapHosts();
+    syncPanelRegion();
     if (options.focus === false) return;
     const itemButton = itemId ? doc.querySelector(`.roadmap-item[data-roadmap-item="${cssEscape(itemId)}"]`) : null;
     const visibleTrigger = panel.closest('.continuity-fullscreen-host') ? doc.querySelector('#graph-roadmap') : itemButton;
@@ -691,6 +1351,7 @@ export function initializeReview(bootstrap, helpers) {
   }
 
   function openRoadmapItem(itemId, options = {}) {
+    versionDiffApi?.close();
     if (historySelection) { showHistoryRoadmapItem(itemId, options); return; }
     const view = roadmapViewFor(current.state);
     if (!asArray(view.items).some((entry) => entry.id === itemId)) {
@@ -1382,7 +2043,7 @@ export function initializeReview(bootstrap, helpers) {
 
   function panelHeaderForClaim(claim, node) {
     const summary = claimSummary(claim);
-    const capture = asArray(state.conversationCaptures).find((c) => c.id === claim.conversationSource?.captureId);
+    const capture = asArray(current.state.conversationCaptures).find((c) => c.id === claim.conversationSource?.captureId);
     const item = capture?.items?.[claim.conversationSource?.itemIndex];
     const source = item ? make('details', { class: 'panel-section conversation-source' },
       make('summary', { text: `会话来源 · ${{ user_statement: '用户原话', assistant_suggestion: '助手建议', assistant_report: '助手报告（未经执行验证）' }[item.basis]}` }),
@@ -1507,6 +2168,7 @@ export function initializeReview(bootstrap, helpers) {
 
   function openNode(nodeId, options = {}) {
     if (historySelection) return;
+    versionDiffApi?.close();
     const node = nodeById(nodeId);
     if (!node) { showMissingTarget('节点', nodeId); return; }
     formRevision += 1;
@@ -1520,6 +2182,7 @@ export function initializeReview(bootstrap, helpers) {
     if (node.description) wrapper.append(paragraph('', node.description));
     const featureProgress = featureProgressElement(current.state, nodeId, { historical: false });
     if (featureProgress) wrapper.append(featureProgress);
+    wrapper.append(workSection());
     wrapper.append(make('p', { class: 'muted', text: '先查看本节点的意图列表与确认比例，再打开单条面板。' }));
     const host = make('div', { class: 'panel-directory' });
     host.innerHTML = helpers.renderDirectory(current.state, {
@@ -1527,6 +2190,7 @@ export function initializeReview(bootstrap, helpers) {
       readOnlyReason: current.readOnlyReason || (writeBlocked ? '保存结果待核对，已停写' : ''),
       nodeId,
       progress: featureProgressCardLinesFor(current.state),
+      currentWork: currentWorkByNode(current.state),
     });
     wrapper.append(host);
     wrapper.append(evidenceSection(node));
@@ -1893,7 +2557,7 @@ export function initializeReview(bootstrap, helpers) {
     panelTitle.textContent = '选择一条意图';
     panelClose.hidden = true;
     const list = make('div', {});
-    list.innerHTML = helpers.renderDirectory(current.state, { writable: current.writable && !writeBlocked, readOnlyReason: current.readOnlyReason, progress: featureProgressCardLinesFor(current.state) });
+    list.innerHTML = helpers.renderDirectory(current.state, { writable: current.writable && !writeBlocked, readOnlyReason: current.readOnlyReason, progress: featureProgressCardLinesFor(current.state), currentWork: currentWorkByNode(current.state) });
     panelBody.append(make('p', { class: 'muted', text: `${kind} ${id} 不在当前状态中（可能已被替代或关闭）。已回到意图列表。` }), list);
     setStatus(`${kind} ${id} 不在当前状态；已回到列表。`, { error: true, focus: true });
   }
@@ -1915,6 +2579,7 @@ export function initializeReview(bootstrap, helpers) {
 
   function openClaim(claimId, options = {}) {
     if (historySelection) return;
+    versionDiffApi?.close();
     const claim = claimById(claimId);
     if (!claim) { showMissingTarget('意图', claimId); return; }
     const node = nodeForClaim(claim);
@@ -1932,6 +2597,7 @@ export function initializeReview(bootstrap, helpers) {
 
   function openProposal(proposalId, options = {}) {
     if (historySelection) return;
+    versionDiffApi?.close();
     const proposal = proposalById(proposalId);
     if (!proposal) {
       if (options.claimId) { openClaim(options.claimId, { fromUrl: true, focus: options.focus }); setStatus(`提案 ${proposalId} 不在当前状态中（可能已关闭）。`, { error: true, focus: true }); }
@@ -2063,17 +2729,41 @@ export function initializeReview(bootstrap, helpers) {
     if (panelTarget) closePanel({ focus: options.focus !== false });
   }
 
+  // `?work=` opens the work panel and leaves the review form alone; the review
+  // params are restored independently by routeFromUrl (or, when there are none,
+  // simply never touched).
+  function workIdFromUrl() {
+    const value = new URLSearchParams(location.search).get('work');
+    return value || null;
+  }
+
+  function restoreWorkFromUrl(options = {}) {
+    if (historySelection) return false;
+    const workId = workIdFromUrl();
+    if (!workId) {
+      if (workView) closeWorkPanel({ focus: false });
+      return false;
+    }
+    const work = workProjectionFor(current.state, workId);
+    const unchanged = workView && workView.workId === workId && workView.mode !== 'editor';
+    if (unchanged) { workView.work = work; renderWorkPanel(); return true; }
+    openWorkUri(workId, 'detail', { url: false, focus: options.focus ?? false });
+    return true;
+  }
+
   function renderDirectoryHosts() {
     if (directoryHost) {
       directoryHost.innerHTML = helpers.renderDirectory(current.state, {
         writable: current.writable && !writeBlocked,
         readOnlyReason: current.readOnlyReason || (writeBlocked ? '保存结果待核对，已停写' : ''),
         progress: featureProgressCardLinesFor(current.state),
+        currentWork: currentWorkByNode(current.state),
       });
     }
     if (deferHost) deferHost.innerHTML = helpers.renderDeferQueue(current.state);
     renderRoadmapHosts();
     renderCurrentRoadmapPanel();
+    renderWorkPanel();
   }
 
   function updateGraph() {
@@ -2552,9 +3242,39 @@ export function initializeReview(bootstrap, helpers) {
   }
 
   doc.addEventListener('click', (event) => {
-    if (historySelection && event.target.closest('[data-action],[data-open-claim],[data-open-proposal],[data-open-node]')) { event.preventDefault(); return; }
+    if (historySelection && event.target.closest('[data-action],[data-open-claim],[data-open-proposal],[data-open-node],[data-work-id],[data-work-action],[data-work-focus-node]')) { event.preventDefault(); return; }
+    const workActionButton = event.target.closest('[data-work-action]');
+    if (workActionButton) {
+      event.preventDefault();
+      const action = workActionButton.dataset.workAction;
+      if (action === 'preview') { void previewWorkSave(); return; }
+      if (action === 'save') { void saveWork(); return; }
+      if (action === 'back') { backToNow(); return; }
+      if (action === 'cancel' || action === 'close') { closeWorkPanel(); return; }
+      if (action === 'history') { openWorkHistory(workActionButton.dataset.workId ?? workView?.workId); return; }
+      if (action === 'edit') {
+        const workId = workActionButton.dataset.workId ?? workView?.workId;
+        openWorkEditor(workId, workActionButton.dataset.workOperation ?? 'adjust', { trigger: workActionButton });
+        return;
+      }
+      if (action === 'status') { void readWorkStatus(); return; }
+      return;
+    }
+    const workFocusButton = event.target.closest('[data-work-focus-node]');
+    if (workFocusButton) {
+      event.preventDefault();
+      filterRelatedWork(workFocusButton.dataset.workFocusNode);
+      return;
+    }
+    const workEntryButton = event.target.closest('[data-work-id]');
+    if (workEntryButton && !workEntryButton.closest('#current-work-panel')) {
+      event.preventDefault();
+      openWorkDetail(workEntryButton.dataset.workId, { trigger: workEntryButton });
+      return;
+    }
     if (event.target.closest('#graph-roadmap')) {
       event.preventDefault();
+      versionDiffApi?.close();
       if (historySelection) {
         const host = doc.querySelector('#history-panel');
         host.replaceChildren(make('h2',{id:'history-panel-title',tabindex:'-1',text:'所选快照 · 功能规划'}),button('回到现在',{},() => {void graphTimeApi?.showCurrent();}));
@@ -2622,6 +3342,11 @@ export function initializeReview(bootstrap, helpers) {
   doc.addEventListener('keydown', (event) => {
     if (historySelection) return;
     if (event.key !== 'Escape' || busy) return;
+    if (workView) {
+      event.preventDefault();
+      closeWorkPanel();
+      return;
+    }
     if (roadmapPanel && !roadmapPanel.hidden) {
       event.preventDefault();
       closeRoadmapPanel();
@@ -2631,7 +3356,10 @@ export function initializeReview(bootstrap, helpers) {
     event.preventDefault();
     closePanel();
   });
-  window.addEventListener('popstate', () => routeFromUrl({ focus: true }));
+  window.addEventListener('popstate', () => {
+    routeFromUrl({ focus: true });
+    restoreWorkFromUrl({ focus: false });
+  });
   window.addEventListener('focus', () => { if (!busy && !pending) refreshState({ quiet: true }); });
   doc.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && !busy && !pending) refreshState({ quiet: true });
@@ -2639,6 +3367,7 @@ export function initializeReview(bootstrap, helpers) {
 
   panelClose?.addEventListener('click', () => closePanel());
   roadmapClose?.addEventListener('click', () => closeRoadmapPanel());
+  workClose?.addEventListener('click', () => closeWorkPanel());
   renderViewButton?.addEventListener('click', renderView);
 
   function initialize() {
@@ -2659,6 +3388,9 @@ export function initializeReview(bootstrap, helpers) {
       }
       inspectPending();
     });
+    // §13.2: a page loaded with `?work=` opens the work panel; the review form is
+    // left exactly as the review params (if any) restored it.
+    restoreWorkFromUrl({ focus: false });
   }
 
   initialize();

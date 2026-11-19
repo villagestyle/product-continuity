@@ -18,6 +18,9 @@ import {
   FEATURE_PROGRESS_LIMITS,
 } from './feature-progress.mjs';
 import {
+  buildCurrentWorkWrite,
+} from './current-work-model.mjs';
+import {
   StoreError, acquireStateLocks, assertStateLocks, canonicalizeStatePath,
   commitStateBytes, readStateFile, releaseStateLocks, sha256Bytes, validateFullState,
 } from './state-store.mjs';
@@ -299,8 +302,169 @@ function previewShape(state, digest, prepared) {
   };
 }
 
+// --- Current-work delegation -------------------------------------------------
+// A plan that carries `content` (and no checkpoint `nodeId`) is one current-work
+// write from references/current-work-contract.md §9/§10. Every rule lives in the
+// shared pure builder; this file only does its existing read/lock/commit work.
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+const CURRENT_WORK_PREVIEW_FIELDS = ['projectId', 'expectedStateVersion', 'expectedDigest', 'content'];
+const CURRENT_WORK_APPLY_FIELDS = [...CURRENT_WORK_PREVIEW_FIELDS, 'operationId', 'authorizationRef'];
+
+function isCurrentWorkPlan(plan) {
+  return isPlainObject(plan) && Object.hasOwn(plan, 'content') && !Object.hasOwn(plan, 'nodeId');
+}
+
+const CURRENT_WORK_STATUS = {
+  invalid_request: 400,
+  unresolved_upper_ref: 400,
+  unsupported_schema: 409,
+  feature_not_found: 404,
+  wrong_project: 403,
+  sidecar_conflict: 409,
+  state_conflict: 409,
+  work_revision_conflict: 409,
+  key_conflict: 409,
+  invalid_state: 422,
+  validation_failed: 422,
+  external_modification: 503,
+};
+
+function throwCurrentWorkFailure(result) {
+  if (result.code === 'validation_failed' && result.details?.reason === 'preview_not_reproducible') {
+    throw new StoreError('validation_failed', 'The rebuild did not reproduce the previewed content.', {
+      status: 503, details: result.details,
+    });
+  }
+  const status = CURRENT_WORK_STATUS[result.code] ?? 500;
+  throw new StoreError(result.code, result.errors.join('; ') || result.code, {
+    status,
+    details: result.details ?? {errors: result.errors},
+  });
+}
+
+function currentWorkPlanFields(plan, fields) {
+  const extra = Object.keys(plan).filter((key) => !fields.includes(key));
+  if (extra.length) fail('invalid_feature_checkpoint_plan', `plan: unexpected field "${extra[0]}"`);
+  const missing = fields.filter((key) => !Object.hasOwn(plan, key));
+  if (missing.length) fail('invalid_feature_checkpoint_plan', `plan: missing field "${missing[0]}"`);
+}
+
+function currentWorkPreviewShape(state, digest, prepared, plan) {
+  const checkpoint = prepared.checkpoint ?? null;
+  return {
+    ok: true,
+    applied: false,
+    replayed: Boolean(prepared.replayed),
+    stateVersion: state.stateVersion,
+    observedDigest: digest,
+    feature: featureSummary(state, plan.content.nodeId),
+    work: { workId: prepared.workId ?? plan.content.workId ?? null, operation: plan.content.operation },
+    recordPreview: prepared.recordPreview,
+    diff: prepared.diff,
+    previewContentDigest: prepared.previewContentDigest,
+    sidecarPlan: prepared.sidecarPlan,
+    computed: checkpoint ? { checkpointBytes: Buffer.byteLength(JSON.stringify(checkpoint), 'utf8') } : null,
+    warnings: [],
+    authorization: {
+      previewOnly: true,
+      sampleIdNotPersisted: true,
+      nextActionsGrantNothing: true,
+      deliveryIsNotAcceptance: true,
+      deliveryIsNotReleaseAuthorization: true,
+    },
+  };
+}
+
+async function previewCurrentWorkCheckpoint(statePath, plan, options = {}) {
+  currentWorkPlanFields(plan, CURRENT_WORK_PREVIEW_FIELDS);
+  const canonical = await canonicalizeStatePath(statePath, {mustExist: true, io: options.io});
+  const read = await readStateFile(canonical.path, options);
+  const state = JSON.parse(read.text);
+  const prepared = buildCurrentWorkWrite(state, plan.content, {
+    ...options,
+    dryRun: true,
+    digest: read.digest,
+    projectId: plan.projectId,
+    expectedStateVersion: plan.expectedStateVersion,
+    expectedDigest: plan.expectedDigest,
+  });
+  if (!prepared.ok) throwCurrentWorkFailure(prepared);
+  return currentWorkPreviewShape(state, read.digest, prepared, plan);
+}
+
+async function applyCurrentWorkCheckpoint(statePath, plan, options = {}) {
+  if (options.authorized !== true) fail('feature_checkpoint_authorization_required', 'Explicit authorization is required; CLI writes use --apply.');
+  currentWorkPlanFields(plan, CURRENT_WORK_APPLY_FIELDS);
+  const canonical = await canonicalizeStatePath(statePath, {mustExist: true, io: options.io});
+  const locks = await acquireStateLocks([canonical.path], {io: options.io});
+  try {
+    const read = await readStateFile(canonical.path, options);
+    const before = JSON.parse(read.text);
+    const prepared = buildCurrentWorkWrite(before, plan.content, {
+      ...options,
+      digest: read.digest,
+      projectId: plan.projectId,
+      operationId: plan.operationId,
+      authorizationRef: plan.authorizationRef,
+      expectedStateVersion: plan.expectedStateVersion,
+      expectedDigest: plan.expectedDigest,
+    });
+    if (!prepared.ok) throwCurrentWorkFailure(prepared);
+    if (prepared.replayed) {
+      return {
+        ok: true, applied: false, replayed: true, commitStatus: 'verified_existing_record',
+        stateVersion: before.stateVersion, digest: read.digest,
+        record: prepared.receipt, checkpoint: prepared.checkpoint,
+        workId: prepared.workId, payloadDigest: prepared.payloadDigest,
+        feature: featureSummary(before, plan.content.nodeId),
+      };
+    }
+    // Sidecar I/O belongs to the store/service layer (contract §7.2). This offline
+    // path delegates it through an injected writer and fails closed otherwise: it
+    // must never rename the state while the sidecars it points at are absent.
+    let sidecarAttempt = null;
+    if (prepared.sidecars.length > 0) {
+      if (typeof options.writeSidecars !== 'function') {
+        fail('prepare_failed', 'Sidecar writing is not available in this offline path; inject options.writeSidecars or use the service route.');
+      }
+      sidecarAttempt = await options.writeSidecars(prepared.sidecars);
+    }
+    const nextBytes = Buffer.from(`${JSON.stringify(prepared.nextState, null, 2)}\n`, 'utf8');
+    let commit;
+    try {
+      commit = await commitStateBytes({
+        statePath: canonical.path, oldBytes: read.bytes, oldDigest: read.digest, oldStat: read.stat,
+        oldVersion: before.stateVersion, nextBytes, nextDigest: sha256Bytes(nextBytes),
+        lockCheck: () => assertStateLocks(locks, {io: options.io}), io: options.io,
+        maxStateBytes: options.maxStateBytes, hooks: options.hooks,
+        verifyCommitted: (saved) => equal(saved, prepared.nextState),
+      });
+    } catch (error) {
+      if (sidecarAttempt && typeof sidecarAttempt.rollback === 'function') await sidecarAttempt.rollback();
+      throw error;
+    }
+    return {
+      ok: true, applied: true, replayed: false, commitStatus: commit.commitStatus,
+      stateVersion: commit.state.stateVersion, digest: commit.digest,
+      backupPath: commit.backupPath, directorySync: commit.directorySync,
+      record: prepared.receipt, checkpoint: prepared.checkpoint,
+      workId: prepared.workId, payloadDigest: prepared.payloadDigest,
+      previewContentDigest: prepared.previewContentDigest,
+      sidecars: prepared.sidecarPlan,
+      feature: featureSummary(prepared.nextState, plan.content.nodeId),
+    };
+  } finally {
+    await releaseStateLocks(locks, {io: options.io});
+  }
+}
+
 // Read-only preview: no lock, backup, temporary file or state write.
 export async function previewFeatureCheckpoint(statePath, plan, options = {}) {
+  if (isCurrentWorkPlan(plan)) return previewCurrentWorkCheckpoint(statePath, plan, options);
   validateFeatureCheckpointPlan(plan);
   plan = structuredClone(plan);
   const canonical = await canonicalizeStatePath(statePath, { mustExist: true, io: options.io });
@@ -311,6 +475,7 @@ export async function previewFeatureCheckpoint(statePath, plan, options = {}) {
 }
 
 export async function applyFeatureCheckpoint(statePath, plan, options = {}) {
+  if (isCurrentWorkPlan(plan)) return applyCurrentWorkCheckpoint(statePath, plan, options);
   if (options.authorized !== true) fail('feature_checkpoint_authorization_required', 'Explicit authorization is required; CLI writes use --apply.');
   validateFeatureCheckpointPlan(plan);
   plan = structuredClone(plan);

@@ -16,6 +16,9 @@ export function buildGraphLayout(nodes, edges, collapsedIds = []) {
   const isHierarchy = (edge) => edge.kind === 'contains' || edge.kind === 'part_of';
 
   function attach(parent, child, edge, explicit) {
+    // Comparison-only relationships may place a ghost, never reparent a real
+    // selected-snapshot card or invent a hierarchy warning in its fact tree.
+    if(edge.diffGhost && !byId.get(child)?.diffGhost)return;
     if (parent === child) {
       if (explicit) warnings.push({ kind: 'self', edgeId: edge.id });
       return;

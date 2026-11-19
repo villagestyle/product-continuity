@@ -28,6 +28,9 @@ export const timelineStyles = `
 .graph-time-note{font-size:.72rem;color:var(--muted);margin:0;line-height:1.5}.graph-time[data-mode=history]{background:var(--blue-soft)}
 .history-panel{padding:1rem;overflow-wrap:anywhere}.history-panel h3{font-size:1rem;margin:.6rem 0}.history-panel h4{margin:.7rem 0 .3rem}.history-panel pre{white-space:pre-wrap;font-size:.75rem;overflow-wrap:anywhere}.history-panel .intent-list{padding-left:1.2rem}
 .history-panel-head{display:flex;align-items:center;justify-content:space-between;gap:.5rem}.history-panel .badge{color:var(--blue);background:var(--blue-soft)}
+.version-diff-bar{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap;border-top:1px solid var(--line);padding:.25rem .65rem;font-size:.74rem;background:var(--surface)}.version-diff-bar label{display:flex;align-items:center;gap:.25rem;min-height:44px;white-space:nowrap}.version-diff-bar input{min-height:0;width:16px;height:16px;accent-color:var(--green)}.version-diff-bar button{font-size:.74rem;padding:.25rem .4rem;min-height:44px}#version-diff-summary{flex:1;text-align:left;min-width:160px;color:var(--blue)}
+.version-diff-panel{padding:.8rem;overflow-wrap:anywhere}.version-diff-panel h2{font-size:1rem}.version-diff-panel h3{font-size:.9rem;margin:.8rem 0}.version-diff-controls{display:flex;gap:.5rem;flex-wrap:wrap;margin:.65rem 0}.version-diff-controls label{display:grid;gap:.2rem;font-size:.78rem;min-width:0;flex:1}.version-diff-controls input,.version-diff-controls select{width:100%}.version-diff-list{max-height:250px;overflow:auto;overscroll-behavior:contain}.version-diff-list p{font-size:.75rem}.version-diff-item{display:block;width:100%;text-align:left;font-size:.78rem;margin:.25rem 0;overflow-wrap:anywhere}.version-diff-item[aria-pressed=true]{background:var(--blue-soft);border-color:var(--blue)}.version-diff-item[data-kind=added]{border-left:3px solid var(--green)}.version-diff-item[data-kind=removed]{border-left:3px dashed var(--red)}.version-diff-field{margin:.65rem 0}.version-diff-field h4{font-size:.8rem}.version-diff-values{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:.4rem}.version-diff-values>div{min-width:0;background:var(--paper);padding:.45rem;border-radius:4px;font-size:.74rem}.version-diff-after{background:var(--green-soft)!important}.version-diff-values pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:.2rem 0;font-size:.74rem}@media(max-width:760px){.version-diff-values{grid-template-columns:minmax(0,1fr)}}
+.version-diff-controls input,.version-diff-controls select,.version-diff-panel button{min-height:44px}.version-diff-bar{gap:.35rem .5rem}.graph-node[data-diff]{content-visibility:visible}.graph-diff-key{white-space:pre-line}.graph-diff-ghost[data-diff=added] .graph-node-select{border-color:var(--green);background:var(--green-soft)}
 @media(max-width:1100px){.graph-stage{height:var(--graph-stage-h,clamp(560px,calc(100vh - 3.5rem),1160px));height:var(--graph-stage-h,clamp(560px,calc(100dvh - 3.5rem),1160px))}}
 @media(max-width:760px){.graph-stage{height:var(--graph-stage-h,clamp(480px,calc(100vh - 3rem),960px));height:var(--graph-stage-h,clamp(480px,calc(100dvh - 3rem),960px))}.timeline-event-layout{grid-template-columns:minmax(0,1fr)}.timeline-metrics{grid-template-columns:minmax(0,1fr)}.timeline-summary{margin-left:0}.timeline-content{padding:.5rem .65rem .65rem}}
 `;
@@ -37,6 +40,7 @@ export function renderGraphTimeShell() {
     <div class="graph-time-head"><label for="graph-time-range">图谱时间轴</label><output id="graph-time-label" for="graph-time-range">现在</output></div>
     <div class="graph-time-controls"><button type="button" id="graph-time-previous" aria-label="上一个可核验版本" disabled>上一版</button><input id="graph-time-range" type="range" min="0" max="0" value="0" step="1" aria-describedby="graph-time-note" disabled><button type="button" id="graph-time-next" aria-label="下一个可核验版本" disabled>下一版</button><button type="button" id="graph-time-now" disabled>回到现在</button></div>
     <p id="graph-time-note" class="graph-time-note" role="status" aria-live="polite">正在读取可核验版本；拖动只切换查看，不恢复主状态。</p>
+    <div id="version-diff-bar" class="version-diff-bar" aria-label="版本差异" hidden></div>
   </section>`;
 }
 
@@ -73,7 +77,7 @@ export function initializeGraphTime(bootstrap, hooks = {}) {
     const token = ++sequence;
     controller?.abort(); controller = null;
     selected = next; loading = false;
-    if (next === 'now') { hooks.showCurrent?.(); render(); return; }
+    if (next === 'now') { hooks.showCurrent?.(); render(); hooks.compare?.(sample,samples[index-1] || samples[index+1],null); return; }
     // Hide the previous tree while loading, so its nodes can never be mistaken
     // for the requested version. Invalidate async work even when returning now.
     loading = true; controller = new AbortController();
@@ -83,6 +87,7 @@ export function initializeGraphTime(bootstrap, hooks = {}) {
       if (token !== sequence) return;
       if (result?.sample?.stateVersion !== sample.stateVersion || result?.fileDigest !== sample.digest || result?.state?.stateVersion !== sample.stateVersion || result?.state?.project?.id !== bootstrap.state?.project?.id || result?.stateIdentity !== bootstrap.stateIdentity || result?.writable !== false) throw new Error('历史快照身份不匹配');
       loading = false; hooks.showSnapshot?.(result); render();
+      hooks.compare?.(sample,samples[index-1] || samples[index+1],result);
     } catch (error) {
       if (token !== sequence) return;
       loading = false; hooks.showUnavailable?.(sample);
@@ -118,6 +123,8 @@ export function initializeGraphTime(bootstrap, hooks = {}) {
       return;
     }
     selected = 'now'; render();
+    const index = samples.findIndex((sample) => key(sample) === 'now');
+    hooks.compare?.(samples[index],samples[index-1] || samples[index+1],null);
   }
   update(bootstrap.state, bootstrap.timelineHistory);
   return {update, showCurrent() { const index=samples.findIndex((sample) => key(sample)==='now'); return choose(index); }};
@@ -208,7 +215,7 @@ export function initializeTimeline(bootstrap, helpers, hooks = {}) {
       entry.setAttribute('aria-expanded', String(host.open));
       if (host.open) {
         const summary = host.querySelector('summary');
-        if (!docked) summary.scrollIntoView({block:'nearest'});
+        summary.scrollIntoView({block:'nearest'});
         summary.focus({preventScroll:true});
       }
     });

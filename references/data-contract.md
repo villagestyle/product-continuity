@@ -553,6 +553,15 @@ type FeatureCheckpoint = {
   nextActionsStatus: 'recorded' | 'none' | 'not_prepared';
   basis: CheckpointBasis;
   delivery?: CheckpointDelivery;    // optional saved delivery statement
+  workContext?: WorkContext;         // current-work record only; see current-work-contract.md
+  adoptedBasis?: AdoptedBasis[];     // current-work record only
+  workSupportSnapshots?: WorkSupportSnapshot[]; // current-work digests only, 0..200
+};
+
+type WorkSupportSnapshot = {
+  collection: 'node' | 'evidence' | 'check';
+  id: string;
+  digest: string;                   // sha256 of canonical content projection; no body stored
 };
 
 type CheckpointDelivery = {

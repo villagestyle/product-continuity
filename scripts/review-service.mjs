@@ -21,11 +21,13 @@
  *   claim of transactional cancellation.
  */
 
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { REVIEW_ACTIONS } from './intent-model.mjs';
+import {
+  REVIEW_ACTIONS,
+} from './intent-model.mjs';
 import { renderMap } from './render-map.mjs';
 import { loadConversationAuthorization, verifyConversationSignature } from './conversation-authorization.mjs';
 
@@ -44,6 +46,55 @@ const COOKIE_MAX_LENGTH = 4096;
 const MAX_REQUEST_TARGET_LENGTH = 2048;
 const SUPPORTED_LANGUAGES = new Set(['zh-CN', 'en']);
 const KNOWN_ACTIONS = new Set(REVIEW_ACTIONS);
+// Current work (§10.2): the preview handle is process memory only.
+const DEFAULT_CURRENT_WORK_PREVIEW_TTL_MS = 10 * 60 * 1000; // PREVIEW_TTL_SECONDS
+const DEFAULT_CURRENT_WORK_PREVIEW_MAX = 256; // PREVIEW_BINDING_MAX
+const DEFAULT_CURRENT_WORK_PREVIEW_MAX_BYTES = 16 * 1024 * 1024; // PREVIEW_BINDING_MAX_BYTES
+const PREVIEW_ID_PATTERN =
+  /^preview:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const WORK_ID_PATTERN = /^work:[A-Za-z0-9._:-]{1,150}$/;
+const ID_VALUE_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,159}$/;
+const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+// §10.2: the preview body is the complete write content, never the journal.
+const CURRENT_WORK_PREVIEW_KEYS = ['projectId', 'expectedStateVersion', 'expectedDigest', 'content'];
+// §10.3: the save body is journal fields only; the content lives in the binding.
+const CURRENT_WORK_SAVE_KEYS = [
+  'projectId',
+  'previewId',
+  'previewContentDigest',
+  'operationId',
+  'authorizationRef',
+  'expectedStateVersion',
+  'expectedDigest',
+];
+// HTTP status per contract §11. Only these codes cross the HTTP boundary for a
+// current-work write; anything else is a store or transport failure.
+const CURRENT_WORK_FAILURE_STATUS = {
+  invalid_request: 400,
+  unknown_work_operation: 400,
+  unresolved_upper_ref: 400,
+  unsupported_schema: 409,
+  feature_not_found: 404,
+  wrong_project: 403,
+  preview_expired: 410,
+  preview_consumed: 409,
+  preview_stale: 409,
+  payload_mismatch: 409,
+  sidecar_conflict: 409,
+  state_conflict: 409,
+  work_revision_conflict: 409,
+  key_conflict: 409,
+  validation_failed: 422,
+  preview_not_reproducible: 503,
+  late_schema_changed: 503,
+  external_modification: 503,
+  backup_failed: 500,
+  prepare_failed: 500,
+  queue_full: 503,
+  store_unavailable: 503,
+  not_committed: 500,
+  unknown: 502,
+};
 
 const JSON_CONTENT_TYPE = /^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?$/i;
 
@@ -142,6 +193,23 @@ const SAFE_MESSAGES = {
   state_unverifiable: 'The state file cannot be verified; writes are stopped.',
   hardlink_state: 'The state file has multiple hard links; writes are stopped.',
   state_too_large: 'The state file exceeds the configured size limit.',
+  preview_expired: 'The preview handle expired or belongs to another session; preview again.',
+  preview_consumed: 'This preview was already used for a different save; preview again.',
+  preview_stale: 'The preview was minted against different state bytes; discard it and preview again.',
+  payload_mismatch: 'The save does not name the previewed content digest; preview again.',
+  preview_not_reproducible: 'The rebuild on unchanged bytes produced different content; nothing was written.',
+  unknown_work_operation: 'The work operation is not supported.',
+  unresolved_upper_ref: 'An upper-layer reference does not resolve to a saved record.',
+  unsupported_schema: 'Current work requires a 0.2 state; migrate explicitly first.',
+  feature_not_found: 'The work must belong to an existing capability.',
+  sidecar_conflict: 'An existing current-work sidecar holds different bytes; it is never overwritten.',
+  state_conflict: 'The state file changed since this write was previewed; re-read and preview again.',
+  work_revision_conflict: 'The work revision changed; re-read that work and merge explicitly.',
+  key_conflict: 'This operationId was already used with different content.',
+  validation_failed: 'The next state failed validation; nothing was written.',
+  late_schema_changed: 'The readback saw a different schema; stop and do not retry.',
+  not_committed: 'The attempt ended before any rename; a retry with the same operationId is safe.',
+  unknown: 'The attempt ended without a readable outcome; read the status independently.',
   internal_error: 'The request could not be completed.',
 };
 
@@ -182,6 +250,9 @@ async function loadCore() {
         openStateStore: storeModule.openStateStore,
         canonicalizeStatePath: storeModule.canonicalizeStatePath,
         createIoAdapter: storeModule.createIoAdapter,
+        // §10.1's lock-free status read. Loaded from the same module so the
+        // status route cannot drift from the store's own state gate.
+        readCurrentWorkStatusSnapshot: storeModule.readCurrentWorkStatusSnapshot,
         validateReviewRequest: validatorModule.validateReviewRequest,
         validatePreviewRequest: validatorModule.validatePreviewRequest,
       };
@@ -304,6 +375,14 @@ function sanitizeDetails(details) {
     /^sha256:[0-9a-f]{64}$/.test(details.currentDigest)
   ) {
     output.currentDigest = details.currentDigest;
+  }
+  // Current-work identifiers only; never a path, digest of foreign bytes or
+  // free text from the file.
+  if (typeof details.currentRecordId === 'string' && ID_VALUE_PATTERN.test(details.currentRecordId)) {
+    output.currentRecordId = details.currentRecordId;
+  }
+  if (typeof details.workId === 'string' && WORK_ID_PATTERN.test(details.workId)) {
+    output.workId = details.workId;
   }
   if (details.viewStatus) output.viewStatus = publicViewStatus(details.viewStatus);
   return Object.keys(output).length ? output : undefined;
@@ -883,6 +962,439 @@ function rendererSnapshot(snapshot) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Current work: preview handles, request shape and the digest boundary
+// ---------------------------------------------------------------------------
+//
+// §10.2/§10.3 decide digests in scripts/current-work-model.mjs; this layer must
+// not invent a second rule. The only digest this file ever asks for is the
+// human-facing one, and it asks the builder:
+//
+//   * previewContentDigest - the builder's `previewContentDigest` over the
+//     complete normalized content. Bound to the preview handle (§10.2), echoed
+//     by the save body as `previewContentDigest`, compared at rule 6;
+//   * operationPayloadDigest - the receipt's `payloadDigest`, derived by the
+//     builder and the replay lookup from `{previewContentDigest, authorizationRef}`.
+//     It is never recomputed or compared here; §10.3 rule 9a lives inside the
+//     builder via `resolveCurrentWorkReplay`.
+//
+// They are different values and no code below assumes otherwise. Keeping the
+// split here is what lets the contract owner change either formula without
+// touching these routes.
+// ---------------------------------------------------------------------------
+
+function isSafeStateVersion(value) {
+  return Number.isSafeInteger(value) && value >= 1 && value < Number.MAX_SAFE_INTEGER;
+}
+
+// The service must not start (injected) nor answer (built-in) with a module that
+// cannot enforce the contract. Checked once, at the seam.
+const CURRENT_WORK_MODEL_EXPORTS = ['buildCurrentWorkWrite', 'resolveCurrentWorkReplay'];
+
+function currentWorkModelProblems(model) {
+  if (!isRecord(model)) return ['current work model: expected a module object'];
+  const problems = [];
+  for (const name of CURRENT_WORK_MODEL_EXPORTS) {
+    if (typeof model[name] !== 'function') problems.push(`current work model: ${name}() is missing`);
+  }
+  if (!Array.isArray(model.CURRENT_WORK_OPERATIONS) || model.CURRENT_WORK_OPERATIONS.length === 0) {
+    problems.push('current work model: CURRENT_WORK_OPERATIONS is missing');
+  }
+  if (!isRecord(model.CURRENT_WORK_CONSTANTS)) {
+    problems.push('current work model: CURRENT_WORK_CONSTANTS is missing');
+  }
+  return problems;
+}
+
+function assertCurrentWorkModel(model, label) {
+  const problems = currentWorkModelProblems(model);
+  if (problems.length) {
+    throw new ServiceError('invalid_server_option', 400, `${label}: ${problems.join('; ')}`);
+  }
+}
+
+function isDigestString(value) {
+  return typeof value === 'string' && DIGEST_PATTERN.test(value);
+}
+
+function isBoundedText(value, max) {
+  return typeof value === 'string' && value.length > 0 && value.length <= max && /\S/.test(value);
+}
+
+function exactKeysErrors(body, keys) {
+  const actual = Object.keys(body);
+  const unexpected = actual.filter((key) => !keys.includes(key));
+  if (unexpected.length) {
+    return [
+      `body: unexpected key(s) ${unexpected.map((key) => JSON.stringify(key)).join(', ')}; expected exactly ${keys.join(', ')}`,
+    ];
+  }
+  const missing = keys.filter((key) => !Object.hasOwn(body, key));
+  if (missing.length) {
+    return [`body: missing key(s) ${missing.join(', ')}; expected exactly ${keys.join(', ')}`];
+  }
+  return [];
+}
+
+function currentWorkPreviewRequestErrors(body) {
+  const errors = exactKeysErrors(body, CURRENT_WORK_PREVIEW_KEYS);
+  if (errors.length) return errors;
+  if (!isBoundedText(body.projectId, 2000)) errors.push('body.projectId: expected a non-empty string');
+  if (!isSafeStateVersion(body.expectedStateVersion)) {
+    errors.push('body.expectedStateVersion: expected a safe integer >= 1');
+  }
+  if (!isDigestString(body.expectedDigest)) {
+    errors.push('body.expectedDigest: expected sha256:<64 lowercase hex>');
+  }
+  if (!isRecord(body.content)) errors.push('body.content: expected an object');
+  // Shape only: the builder's own validator owns every content rule. §10.2 also
+  // forbids smuggling journal fields inside the content.
+  if (isRecord(body.content)) {
+    for (const key of ['operationId', 'authorizationRef', 'payloadDigest', 'previewContentDigest']) {
+      if (Object.hasOwn(body.content, key)) {
+        errors.push(`body.content: ${key} belongs to the save, not to the preview`);
+      }
+    }
+  }
+  return errors;
+}
+
+function currentWorkSaveRequestErrors(body) {
+  const errors = exactKeysErrors(body, CURRENT_WORK_SAVE_KEYS);
+  if (errors.length) return errors;
+  if (!isBoundedText(body.projectId, 2000)) errors.push('body.projectId: expected a non-empty string');
+  if (typeof body.previewId !== 'string' || !PREVIEW_ID_PATTERN.test(body.previewId)) {
+    errors.push('body.previewId: expected preview:<uuid>');
+  }
+  if (!isDigestString(body.previewContentDigest)) {
+    errors.push('body.previewContentDigest: expected sha256:<64 lowercase hex>');
+  }
+  if (!isBoundedText(body.operationId, 160)) {
+    errors.push('body.operationId: expected 1..160 non-blank characters');
+  }
+  if (!isBoundedText(body.authorizationRef, 2000)) {
+    errors.push('body.authorizationRef: expected 1..2000 non-blank characters');
+  }
+  if (!isSafeStateVersion(body.expectedStateVersion)) {
+    errors.push('body.expectedStateVersion: expected a safe integer >= 1');
+  }
+  if (!isDigestString(body.expectedDigest)) {
+    errors.push('body.expectedDigest: expected sha256:<64 lowercase hex>');
+  }
+  return errors;
+}
+
+function currentWorkFailureDetails(failure) {
+  const source = isRecord(failure?.details) ? failure.details : {};
+  const details = {};
+  const errors = limitErrors(failure?.errors) ?? limitErrors(source.errors);
+  if (errors) details.errors = errors;
+  if (typeof source.reason === 'string') details.reason = source.reason;
+  // The builder names the freshly read values `actual*`; the error body
+  // convention (and /api/state) names them `current*`.
+  const version = Number.isSafeInteger(source.actualStateVersion)
+    ? source.actualStateVersion
+    : source.currentStateVersion;
+  if (Number.isSafeInteger(version)) details.currentStateVersion = version;
+  const digest = typeof source.actualDigest === 'string' ? source.actualDigest : source.currentDigest;
+  if (isDigestString(digest)) details.currentDigest = digest;
+  if (typeof source.currentRecordId === 'string') details.currentRecordId = source.currentRecordId;
+  if (typeof source.workId === 'string') details.workId = source.workId;
+  if (typeof source.validatorCode === 'string') details.reason = details.reason ?? source.validatorCode;
+  return Object.keys(details).length ? details : undefined;
+}
+
+function currentWorkServiceError(failure) {
+  const known =
+    typeof failure?.code === 'string' && CURRENT_WORK_FAILURE_STATUS[failure.code] !== undefined;
+  const code = known ? failure.code : 'not_committed';
+  return new ServiceError(code, CURRENT_WORK_FAILURE_STATUS[code], safeMessageFor(code), {
+    commitStatus: 'not_committed',
+    details: currentWorkFailureDetails(failure),
+  });
+}
+
+// Store-level failures that are not already contract codes. Anything absent
+// here passes through untouched, so a contract code keeps its own status.
+const CURRENT_WORK_STORE_ERRORS = {
+  write_unverified: { code: 'unknown', status: 502, commitStatus: 'unknown' },
+  commit_unknown: { code: 'unknown', status: 502, commitStatus: 'unknown' },
+  external_modification: { code: 'external_modification', status: 503 },
+  lock_lost: { code: 'external_modification', status: 503, reason: 'lock_lost' },
+  state_unverifiable: { code: 'external_modification', status: 503, reason: 'state_unverifiable' },
+  hardlink_state: { code: 'external_modification', status: 503, reason: 'hardlink_state' },
+  replace_failed_preserved: { code: 'not_committed', status: 500, reason: 'replace_failed_preserved' },
+  backup_failed: { code: 'backup_failed', status: 500 },
+  prepare_failed: { code: 'prepare_failed', status: 500, reason: 'prepare_failed' },
+  read_only: { code: 'store_unavailable', status: 503, reason: 'read_only' },
+  store_closed: { code: 'store_unavailable', status: 503, reason: 'store_closed' },
+  migration_required: { code: 'unsupported_schema', status: 409, reason: 'migration_required' },
+  invalid_state: { code: 'validation_failed', status: 422, reason: 'invalid_state' },
+  state_validation_failed: { code: 'validation_failed', status: 422, reason: 'state_validation_failed' },
+  state_too_large: { code: 'validation_failed', status: 422, reason: 'state_too_large' },
+  not_committed: { code: 'not_committed', status: 500 },
+  queue_full: { code: 'queue_full', status: 503 },
+};
+
+function translateCurrentWorkStoreError(error) {
+  if (!error || typeof error !== 'object' || typeof error.code !== 'string') return error;
+  const mapped = CURRENT_WORK_STORE_ERRORS[error.code];
+  if (!mapped) return error;
+  const details = { ...(isRecord(error.details) ? error.details : {}) };
+  if (mapped.reason) details.reason = mapped.reason;
+  return new ServiceError(mapped.code, mapped.status, safeMessageFor(mapped.code), {
+    cause: error,
+    commitStatus: mapped.commitStatus ?? error.commitStatus ?? 'not_committed',
+    details,
+  });
+}
+
+/**
+ * `/status` reads the file itself (§10.1), so its failures are read failures,
+ * not commit outcomes: no `commitStatus` is invented. §11.3 treats a state that
+ * trips validation as `invalid_state` "for every reader", so the vocabulary
+ * stays the same one the write path uses.
+ */
+const CURRENT_WORK_STATUS_READ_ERRORS = {
+  state_not_found: { code: 'state_not_found', status: 404 },
+  state_not_file: { code: 'state_not_file', status: 400 },
+  state_too_large: { code: 'validation_failed', status: 422, reason: 'state_too_large' },
+  invalid_state: { code: 'validation_failed', status: 422, reason: 'invalid_state' },
+  invalid_utf8: { code: 'validation_failed', status: 422, reason: 'invalid_state' },
+  hardlink_state: { code: 'external_modification', status: 503, reason: 'hardlink_state' },
+  state_unreadable: { code: 'store_unavailable', status: 503, reason: 'state_unreadable' },
+  state_unverifiable: { code: 'store_unavailable', status: 503, reason: 'state_unverifiable' },
+};
+
+function translateCurrentWorkStatusReadError(error) {
+  const mapped =
+    error && typeof error === 'object' && typeof error.code === 'string'
+      ? CURRENT_WORK_STATUS_READ_ERRORS[error.code]
+      : undefined;
+  // Anything else (including a store the status read cannot interpret) fails
+  // closed as `store_unavailable`: never a `found` answer and never a guess.
+  if (!mapped) {
+    return new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable, {
+      cause: error,
+    });
+  }
+  const details = {};
+  if (mapped.reason) details.reason = mapped.reason;
+  const errors = limitErrors(error.details?.errors);
+  if (errors) details.errors = errors;
+  return new ServiceError(mapped.code, mapped.status, safeMessageFor(mapped.code), {
+    cause: error,
+    ...(Object.keys(details).length ? { details } : {}),
+  });
+}
+
+/** Post-readback check: the committed bytes must hold this record and receipt. */
+function currentWorkVerifyProblems(committedState, built) {
+  const problems = [];
+  const recordId = built?.checkpoint?.id;
+  const receiptId = built?.receipt?.id;
+  const records = Array.isArray(committedState?.featureCheckpoints)
+    ? committedState.featureCheckpoints
+    : [];
+  const updates = Array.isArray(committedState?.mapUpdates) ? committedState.mapUpdates : [];
+  if (typeof recordId !== 'string' || !records.some((record) => record?.id === recordId)) {
+    problems.push('readback is missing the new feature checkpoint');
+  }
+  if (typeof receiptId !== 'string' || !updates.some((update) => update?.id === receiptId)) {
+    problems.push('readback is missing the new map update receipt');
+  }
+  return problems;
+}
+
+/**
+ * §11.1 answers the field from wherever the fact lives; it never invents one.
+ * `live` is the current file as this request read it after the write, and
+ * `built` is the builder's own record of the attempt (absent on a replay).
+ *
+ * The store and the route look exactly like each other here ("state",
+ * "digest"), so only an explicitly nested `built` is trusted; anything else is
+ * treated as a store result rather than silently reported as a null receipt.
+ */
+function currentWorkAttempt(result) {
+  if (isRecord(result?.built)) return result.built;
+  if (isRecord(result?.receipt) || isRecord(result?.checkpoint) || typeof result?.workId === 'string') {
+    return result;
+  }
+  return {};
+}
+
+function publicCurrentWorkSave(result, { liveState, liveDigest, liveStateVersion }) {
+  const built = currentWorkAttempt(result);
+  const replayed = result?.replayed === true;
+  const receipt = isRecord(built.receipt) ? built.receipt : null;
+  const checkpoint = isRecord(built.checkpoint) ? built.checkpoint : null;
+  const observedStateVersion = isRecord(receipt)
+    ? receipt.observedStateVersion ?? null
+    : Number.isSafeInteger(built.previousStateVersion)
+      ? built.previousStateVersion
+      : null;
+  const resultingStateVersion = isRecord(receipt)
+    ? receipt.resultingStateVersion ?? null
+    : Number.isSafeInteger(built.resultingStateVersion)
+      ? built.resultingStateVersion
+      : Number.isSafeInteger(result?.stateVersion)
+        ? result.stateVersion
+        : null;
+  const observedDigest = isRecord(receipt)
+    ? receipt.observedDigest ?? null
+    : isDigestString(built.previousDigest)
+      ? built.previousDigest
+      : null;
+  const operationId = isRecord(receipt) && typeof receipt.operationId === 'string' ? receipt.operationId : null;
+  const payloadDigest = isRecord(receipt) && isDigestString(receipt.payloadDigest)
+    ? receipt.payloadDigest
+    : isDigestString(built.payloadDigest)
+      ? built.payloadDigest
+      : null;
+  // The receipt's own versions are compared with the current file: a later
+  // write is not this commit's bytes.
+  const resultingDigest =
+    resultingStateVersion !== null && resultingStateVersion === liveStateVersion ? liveDigest : null;
+  const digestSource =
+    resultingDigest !== null ? (replayed ? 'current_file' : 'readback') : 'unavailable';
+  return {
+    ok: true,
+    replayed,
+    // The contract has no separate "replayed" commit status: both paths report
+    // the receipt, and `replayed` carries the distinction.
+    commitStatus: 'committed',
+    receiptId: receipt?.id ?? null,
+    recordId: checkpoint?.id ?? null,
+    workId: built.workId ?? checkpoint?.workContext?.workId ?? null,
+    operationId: receipt?.operationId ?? null,
+    observedStateVersion,
+    resultingStateVersion,
+    observedDigest,
+    resultingDigest,
+    digestSource,
+    previewContentDigest: replayed ? null : built.previewContentDigest ?? null,
+    payloadDigest: receipt?.payloadDigest ?? null,
+    // A replay verified nothing in this request: say so instead of claiming it.
+    readback: {
+      verified: replayed ? null : true,
+      recordPresent:
+        checkpoint !== null &&
+        Array.isArray(liveState?.featureCheckpoints) &&
+        liveState.featureCheckpoints.some((record) => record?.id === checkpoint.id),
+      receiptPresent:
+        receipt !== null &&
+        Array.isArray(liveState?.mapUpdates) &&
+        liveState.mapUpdates.some((update) => update?.id === receipt.id),
+    },
+    // File name only: never the absolute path (§11).
+    backupPath: !replayed && typeof result?.backupPath === 'string' ? path.basename(result.backupPath) : null,
+    backupPathAvailable: !replayed && typeof result?.backupPath === 'string',
+  };
+}
+
+function publicCurrentWorkStatus(state, liveDigest, liveStateVersion, query, replay) {
+  if (query.operationId !== null) {
+    // The shared lookup also guards the replay path (§10.3 9a), so it is
+    // stricter than §11.3 in two named ways. A read-only answer must not turn
+    // either into a false alarm:
+    //   * a valid receipt for another work is `integrity: 'ok'`, not `broken`;
+    //   * a receipt whose record was later superseded still *did* commit, so it
+    //     stays `found: true`.
+    const problems = Array.isArray(replay?.problems) ? replay.problems : [];
+    const anotherWork = problems.includes('work_id_mismatch');
+    const onlySuperseded =
+      problems.length > 0 && problems.every((problem) => problem === 'record_is_not_current_work');
+    const found = replay?.found === true || (onlySuperseded && !anotherWork);
+    if (!found) {
+      const output = {
+        ok: true,
+        found: false,
+        operationId: query.operationId,
+        currentStateVersion: liveStateVersion,
+        currentDigest: liveDigest,
+      };
+      // §11.3: no receipt at all is not an integrity finding; a receipt whose
+      // record or chain does not line up is.
+      if (anotherWork) output.integrity = 'ok';
+      else if (replay?.integrity === 'broken') output.integrity = 'broken';
+      return output;
+    }
+    const resultingDigest =
+      replay.resultingStateVersion !== null && replay.resultingStateVersion === liveStateVersion
+        ? liveDigest
+        : null;
+    const recordPresent =
+      isRecord(replay.record) &&
+      Array.isArray(state?.featureCheckpoints) &&
+      state.featureCheckpoints.some((record) => record?.id === replay.record.id);
+    const receiptPresent =
+      isRecord(replay.receipt) &&
+      Array.isArray(state?.mapUpdates) &&
+      state.mapUpdates.some((update) => update?.id === replay.receipt.id);
+    return {
+      ok: true,
+      found: true,
+      source: 'local_feature_checkpoint',
+      operationId: query.operationId,
+      receiptId: replay.receiptId ?? null,
+      recordId: replay.recordId ?? null,
+      workId: replay.workId ?? null,
+      operation: replay.operation ?? null,
+      observedStateVersion: replay.observedStateVersion ?? null,
+      resultingStateVersion: replay.resultingStateVersion ?? null,
+      observedDigest: replay.receipt?.observedDigest ?? null,
+      payloadDigest: replay.payloadDigest ?? null,
+      currentStateVersion: liveStateVersion,
+      currentDigest: liveDigest,
+      resultingDigest,
+      digestBasis: resultingDigest !== null ? 'current_file' : 'unavailable',
+      integrity: 'ok',
+      readback: { recordPresent, receiptPresent },
+    };
+  }
+  // workId only: the receipt that produced this work's current record — what a
+  // panel opening on a work needs (§11.3).
+  const records = Array.isArray(state?.featureCheckpoints) ? state.featureCheckpoints : [];
+  let record = null;
+  for (const item of records) {
+    if (isRecord(item) && isRecord(item.workContext) && item.workContext.workId === query.workId) {
+      record = item;
+    }
+  }
+  if (!record) {
+    return { ok: true, found: false, workId: query.workId, currentStateVersion: liveStateVersion, currentDigest: liveDigest };
+  }
+  const updates = Array.isArray(state?.mapUpdates) ? state.mapUpdates : [];
+  const receipt = updates.find(
+    (update) =>
+      isRecord(update) &&
+      update.source === 'local_feature_checkpoint' &&
+      Array.isArray(update.addedFeatureCheckpointIds) &&
+      update.addedFeatureCheckpointIds.includes(record.id),
+  );
+  const resultingStateVersion =
+    receipt?.resultingStateVersion ??
+    (isSafeStateVersion(record.basis?.observedStateVersion) ? record.basis.observedStateVersion + 1 : null);
+  const resultingDigest =
+    resultingStateVersion !== null && resultingStateVersion === liveStateVersion ? liveDigest : null;
+  return {
+    ok: true,
+    found: true,
+    source: 'local_feature_checkpoint',
+    operationId: typeof receipt?.operationId === 'string' ? receipt.operationId : null,
+    receiptId: typeof receipt?.id === 'string' ? receipt.id : null,
+    recordId: record.id,
+    workId: query.workId,
+    resultingStateVersion,
+    currentStateVersion: liveStateVersion,
+    currentDigest: liveDigest,
+    resultingDigest,
+    digestBasis: resultingDigest !== null ? 'current_file' : 'unavailable',
+    integrity: 'ok',
+    readback: { recordPresent: true, receiptPresent: Boolean(receipt) },
+  };
+}
+
 /**
  * Start the one HTTP entry point for a single state file.
  *
@@ -908,7 +1420,10 @@ function rendererSnapshot(snapshot) {
  *   domain?: object,
  *   fs?: object,
  *   hooks?: object,
- *   projectRoot?: string
+ *   projectRoot?: string,
+ *   previewTtlMs?: number,
+ *   previewMax?: number,
+ *   currentWorkModel?: object
  * }} [options]
  * @returns {Promise<{url: string, port: number, server: import('node:http').Server, store: object, close: Function}>}
  */
@@ -939,6 +1454,25 @@ export async function startReviewService(statePath, options = {}) {
   const bodyTimeoutMs = options.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS;
   if (!Number.isSafeInteger(bodyTimeoutMs) || bodyTimeoutMs < 1) {
     throw new ServiceError('invalid_request', 400, 'bodyTimeoutMs must be a positive safe integer.');
+  }
+  const previewTtlMs = options.previewTtlMs ?? DEFAULT_CURRENT_WORK_PREVIEW_TTL_MS;
+  if (!Number.isSafeInteger(previewTtlMs) || previewTtlMs < 1) {
+    throw new ServiceError(
+      'invalid_server_option',
+      400,
+      'previewTtlMs must be a positive safe integer.',
+    );
+  }
+  const previewMax = options.previewMax ?? DEFAULT_CURRENT_WORK_PREVIEW_MAX;
+  if (!Number.isSafeInteger(previewMax) || previewMax < 1) {
+    throw new ServiceError('invalid_server_option', 400, 'previewMax must be a positive safe integer.');
+  }
+  const previewMaxBytes = DEFAULT_CURRENT_WORK_PREVIEW_MAX_BYTES;
+  if (options.currentWorkModel !== undefined) {
+    if (options.currentWorkModel === null || typeof options.currentWorkModel !== 'object') {
+      throw new ServiceError('invalid_server_option', 400, 'currentWorkModel must be a module object.');
+    }
+    assertCurrentWorkModel(options.currentWorkModel, 'currentWorkModel');
   }
   if (
     options.renderReview !== undefined &&
@@ -1040,6 +1574,183 @@ export async function startReviewService(statePath, options = {}) {
   let rendererPromise;
 
   const queue = createSerialQueue(maxQueue);
+
+  // Current-work preview handles (§10.2): process memory only, bounded by entry
+  // count and held bytes, TTL, one table per service instance. Nothing here is
+  // written to disk and a restart forgets every handle.
+  const previews = new Map();
+  let previewBytes = 0;
+  let currentWorkModelPromise;
+
+  function currentWorkNow() {
+    try {
+      const value = typeof options.clock === 'function' ? options.clock() : options.clock;
+      if (value instanceof Date) return value.getTime();
+      if (typeof value === 'string') {
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+    } catch {
+      // A bad test clock must not wedge the route; fall back to real time.
+    }
+    return Date.now();
+  }
+
+  function currentWorkBuildOptions() {
+    // The shared builder takes an ISO string (not a Date), so normalise here.
+    let clock;
+    try {
+      const value = typeof options.clock === 'function' ? options.clock() : options.clock;
+      if (typeof value === 'string' && Number.isFinite(Date.parse(value))) clock = value;
+      else if (value instanceof Date) clock = value.toISOString();
+    } catch {
+      clock = undefined;
+    }
+    return clock === undefined
+      ? { uuid: () => randomUUID() }
+      : { clock, uuid: () => randomUUID() };
+  }
+
+  async function requireCurrentWorkModel() {
+    if (options.currentWorkModel) return options.currentWorkModel;
+    if (currentWorkModelPromise === undefined) {
+      currentWorkModelPromise = import('./current-work-model.mjs').then(
+        (module) => {
+          if (currentWorkModelProblems(module).length) {
+            throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+          }
+          return module;
+        },
+        (error) => {
+          if (
+            error?.code === 'ERR_MODULE_NOT_FOUND' &&
+            /current-work-model\.mjs/i.test(String(error.message))
+          ) {
+            throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+          }
+          throw error;
+        },
+      );
+    }
+    return currentWorkModelPromise;
+  }
+
+  function requireCurrentWorkStore() {
+    // The work write needs the file-backed store: its serial queue, lock,
+    // `saveCurrentWork` staging/cache adoption, and a state path for the sidecar
+    // root. An injected store is not silently trusted with that.
+    if (
+      options.store ||
+      typeof store.saveCurrentWork !== 'function' ||
+      typeof store.read !== 'function' ||
+      typeof store.statePath !== 'string' ||
+      store.statePath === ''
+    ) {
+      throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+    }
+  }
+
+  function currentWorkSidecarRoot() {
+    // §7.2: `.product-continuity/current-work/<workKey>/…` is project-relative.
+    // The state file normally lives in `<project>/.product-continuity/`, so the
+    // project root is its parent; otherwise use the configured project root.
+    const stateDir = path.dirname(path.resolve(store.statePath));
+    if (path.basename(stateDir) === '.product-continuity') return path.dirname(stateDir);
+    return path.resolve(projectRoot);
+  }
+
+  /**
+   * §10.1: `/status` is read-only — no lock, no queue entry, no write. So it may
+   * not use `readSnapshot()` either when that resolves to `store.read()`, which
+   * enqueues and verifies the cooperative lock. This reads the bound canonical
+   * path directly, bounded and fully validated, and touches no store state.
+   *
+   * An injected store owns its own bytes; it is never read through the
+   * filesystem behind the test adapter's back, so it fails closed unless the
+   * adapter explicitly exposes `readCurrentWorkStatus`.
+   */
+  async function currentWorkStatusSnapshot() {
+    if (options.store) {
+      if (typeof options.store.readCurrentWorkStatus === 'function') {
+        return await options.store.readCurrentWorkStatus();
+      }
+      throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+    }
+    try {
+      return await core.readCurrentWorkStatusSnapshot(canonicalPath, {
+        io: options.fs ? core.createIoAdapter(options.fs) : undefined,
+        maxStateBytes,
+      });
+    } catch (error) {
+      throw translateCurrentWorkStatusReadError(error);
+    }
+  }
+
+  function prunePreviews() {
+    const now = currentWorkNow();
+    for (const [id, entry] of previews) {
+      if (entry.expiresAtMs <= now) {
+        previews.delete(id);
+        previewBytes -= entry.bytes;
+      }
+    }
+  }
+
+  function rememberPreview(previewId, entry) {
+    prunePreviews();
+    if (entry.bytes > previewMaxBytes) {
+      // A single binding cannot be held inside the byte cap; §10.2's table is
+      // bounded, so refuse instead of storing something the cap forbids.
+      throw new ServiceError('payload_too_large', 413, SAFE_MESSAGES.payload_too_large);
+    }
+    // Oldest first: Map keeps insertion order, so the first key is the oldest.
+    // At either cap the oldest entry is dropped, so the table can only ever
+    // answer `preview_expired`, never grow without bound.
+    const overCount = () => previews.size >= previewMax;
+    const overBytes = () => previewBytes + entry.bytes > previewMaxBytes;
+    while (previews.size > 0 && (overCount() || overBytes())) {
+      const oldest = previews.keys().next();
+      if (oldest.done) break;
+      const dropped = previews.get(oldest.value);
+      previews.delete(oldest.value);
+      previewBytes -= dropped.bytes;
+    }
+    previews.set(previewId, entry);
+    previewBytes += entry.bytes;
+  }
+
+  function readPreviewSession(req) {
+    const cookie = parseCookie(req, sessionCookieName);
+    return cookie.present ? cookie.value : null;
+  }
+
+  function readPreviewBinding(previewId, session) {
+    const entry = previews.get(previewId);
+    if (!entry) return null;
+    if (entry.expiresAtMs <= currentWorkNow()) {
+      previews.delete(previewId);
+      previewBytes -= entry.bytes;
+      return null;
+    }
+    // A handle is bound to the session cookie value that minted it (§10.2).
+    if (entry.session !== session) return null;
+    return entry;
+  }
+
+  function claimPreview(binding, operationId) {
+    if (binding.claimedBy !== null) {
+      // §10.3 rule 8: only a *different* operationId is a consumption. The same
+      // operationId continues to rule 9a, which decides replay vs key_conflict
+      // from the saved receipt (the builder owns that comparison).
+      if (binding.claimedBy !== operationId) {
+        throw new ServiceError('preview_consumed', 409, SAFE_MESSAGES.preview_consumed);
+      }
+      return;
+    }
+    // Synchronous check-and-set: two saves cannot both claim this handle.
+    binding.claimedBy = operationId;
+  }
 
   function logAction(entry) {
     try {
@@ -1392,6 +2103,255 @@ export async function startReviewService(statePath, options = {}) {
     }
   }
 
+  async function handleCurrentWorkPreview(req, res, signal, controller) {
+    checkContentHeaders(req, maxBodyBytes);
+    const body = await readJsonBody(req, res, controller, {
+      maxBytes: maxBodyBytes,
+      timeoutMs: bodyTimeoutMs,
+    });
+    requireCurrentWorkStore();
+    const model = await requireCurrentWorkModel();
+    // §10.2 is read-only: no lock of its own, no staging, no write. It reuses
+    // the same fresh read `/api/state` performs.
+    const snapshot = await readSnapshot();
+    if (signal.aborted || res.destroyed) return;
+    const state = snapshot.state;
+    // §10.2 mirrors §10.3 rule 2: the bound project is checked before shape.
+    if (body.projectId !== (state?.project?.id ?? null)) {
+      throw new ServiceError('wrong_project', 403, SAFE_MESSAGES.wrong_project);
+    }
+    const shapeErrors = currentWorkPreviewRequestErrors(body);
+    if (shapeErrors.length) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+        details: { errors: shapeErrors },
+      });
+    }
+    // Same stable code as the save path: an operation outside §3 is its own
+    // failure, not a generic content error.
+    if (!model.CURRENT_WORK_OPERATIONS.includes(body.content?.operation)) {
+      throw new ServiceError('unknown_work_operation', 400, SAFE_MESSAGES.unknown_work_operation);
+    }
+    const digest = snapshot.fileDigest ?? snapshot.currentDigest ?? null;
+    if (!isDigestString(digest)) {
+      // Without the exact bytes there is no binding to hold; never guess one.
+      throw new ServiceError('store_unavailable', 503, SAFE_MESSAGES.store_unavailable);
+    }
+    // A dry run through the same pure builder: it validates the content,
+    // resolves the upper layers and produces the record preview. Nothing is
+    // written — no state, no backup, no sidecar, no preview file.
+    const built = model.buildCurrentWorkWrite(state, body.content, {
+      digest,
+      dryRun: true,
+      ...currentWorkBuildOptions(),
+    });
+    if (!built.ok) throw currentWorkServiceError(built);
+    const previewContentDigest = built.previewContentDigest;
+    if (!isDigestString(previewContentDigest) || typeof built.workId !== 'string') {
+      throw new ServiceError('not_committed', 500, SAFE_MESSAGES.not_committed);
+    }
+    // The binding holds the content *with the minted workId* so the save
+    // rebuilds the same normalized content (§10.2 binding, §10.3 9c).
+    const boundContent = { ...structuredClone(body.content), workId: built.workId };
+    const heldBytes = Buffer.byteLength(JSON.stringify(boundContent), 'utf8');
+    const expiresAtMs = currentWorkNow() + previewTtlMs;
+    const previewId = `preview:${randomUUID()}`;
+    rememberPreview(previewId, {
+      projectId: body.projectId,
+      stateVersion: snapshot.stateVersion ?? state.stateVersion,
+      digest,
+      content: boundContent,
+      previewContentDigest,
+      session: readPreviewSession(req),
+      expiresAtMs,
+      bytes: heldBytes,
+      claimedBy: null,
+    });
+    if (signal.aborted || res.destroyed) return;
+    sendJson(req, res, 200, {
+      ok: true,
+      previewId,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      workId: built.workId,
+      operation: built.operation ?? boundContent.operation ?? null,
+      previewContentDigest,
+      recordPreview: built.recordPreview ?? null,
+      // The receipt row is planned, not created: it will point at the one
+      // record in `recordPreview`, whose id is null until commit.
+      receiptPreview: { source: 'local_feature_checkpoint', addedFeatureCheckpointIds: [null] },
+      diff: Array.isArray(built.diff) ? built.diff : [],
+      sidecarPlan: Array.isArray(built.sidecarPlan) ? built.sidecarPlan : [],
+      notes: [],
+    });
+  }
+
+  async function handleCurrentWorkSave(req, res, signal, controller) {
+    checkContentHeaders(req, maxBodyBytes);
+    const body = await readJsonBody(req, res, controller, {
+      maxBytes: maxBodyBytes,
+      timeoutMs: bodyTimeoutMs,
+    });
+    requireCurrentWorkStore();
+    const model = await requireCurrentWorkModel();
+    const snapshot = await readSnapshot();
+    if (signal.aborted || res.destroyed) return;
+    // §10.3 rule 2 runs before rule 3: a wrong project is a 403 even when the
+    // rest of the body is also wrong.
+    if (body.projectId !== (snapshot.state?.project?.id ?? null)) {
+      throw new ServiceError('wrong_project', 403, SAFE_MESSAGES.wrong_project);
+    }
+    const shapeErrors = currentWorkSaveRequestErrors(body);
+    if (shapeErrors.length) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+        details: { errors: shapeErrors },
+      });
+    }
+    // Rules 4-8 are read-only checks against the in-memory binding; the state
+    // is not re-read for them, and the authoritative CAS is rule 9b.
+    const binding = readPreviewBinding(body.previewId, readPreviewSession(req));
+    if (!binding) {
+      throw new ServiceError('preview_expired', 410, SAFE_MESSAGES.preview_expired);
+    }
+    if (
+      binding.projectId !== body.projectId ||
+      binding.stateVersion !== body.expectedStateVersion ||
+      binding.digest !== body.expectedDigest
+    ) {
+      throw new ServiceError('preview_stale', 409, SAFE_MESSAGES.preview_stale, {
+        details: {
+          currentStateVersion: snapshot.stateVersion ?? null,
+          currentDigest: snapshot.fileDigest ?? null,
+        },
+      });
+    }
+    if (binding.previewContentDigest !== body.previewContentDigest) {
+      throw new ServiceError('payload_mismatch', 409, SAFE_MESSAGES.payload_mismatch);
+    }
+    if (!model.CURRENT_WORK_OPERATIONS.includes(binding.content?.operation)) {
+      throw new ServiceError('unknown_work_operation', 400, SAFE_MESSAGES.unknown_work_operation);
+    }
+    if (typeof model.validateCurrentWorkWrite === 'function') {
+      try {
+        model.validateCurrentWorkWrite(binding.content);
+      } catch (error) {
+        throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request, {
+          cause: error,
+          details: { errors: limitErrors(error?.details?.errors) },
+        });
+      }
+    }
+    claimPreview(binding, body.operationId);
+
+    let result;
+    try {
+      result = await queue.enqueue(async () => {
+        if (signal.aborted) {
+          throw new ServiceError('client_aborted', 499, SAFE_MESSAGES.client_aborted, {
+            noResponse: true,
+          });
+        }
+        return await store.saveCurrentWork({
+          build: (state, context) => {
+            // The bound content, never anything from the request body (§10.4).
+            const built = model.buildCurrentWorkWrite(state, binding.content, {
+              digest: context.digest,
+              projectId: body.projectId,
+              operationId: body.operationId,
+              authorizationRef: body.authorizationRef,
+              expectedStateVersion: body.expectedStateVersion,
+              expectedDigest: body.expectedDigest,
+              previewContentDigest: binding.previewContentDigest,
+              ...currentWorkBuildOptions(),
+            });
+            if (!built.ok) {
+              // The builder already ran rule 9a (replay / key_conflict /
+              // external_modification) before its own CAS, so a refusal here is
+              // final and nothing was written.
+              const failure = currentWorkServiceError(built);
+              return {
+                ok: false,
+                code: failure.code,
+                status: failure.status,
+                message: failure.message,
+                details: failure.details,
+              };
+            }
+            if (built.replayed === true) {
+              // The store returns this value verbatim; keep the builder's own
+              // result shape so §11.1 reads the receipt from one place only.
+              return built;
+            }
+            // One level, not two: the store calls this whole value `built`, so
+            // nesting the builder result under `built` would hide the receipt.
+            return {
+              ...built,
+              verify: (committedState) => currentWorkVerifyProblems(committedState, built),
+            };
+          },
+          sidecarRoot: currentWorkSidecarRoot(),
+        });
+      }, signal);
+    } catch (error) {
+      throw translateCurrentWorkStoreError(error);
+    }
+    if (signal.aborted || res.destroyed) return;
+    // §11.1 reports what this request observed: the store's own readback after
+    // a commit, or the bytes it just read on a replay.
+    sendJson(
+      req,
+      res,
+      200,
+      publicCurrentWorkSave(result, {
+        liveState: result?.state ?? null,
+        liveDigest: isDigestString(result?.digest) ? result.digest : null,
+        liveStateVersion: Number.isSafeInteger(result?.stateVersion) ? result.stateVersion : null,
+      }),
+    );
+  }
+
+  async function handleCurrentWorkStatus(req, res, signal) {
+    const model = await requireCurrentWorkModel();
+    const params = new URLSearchParams(parseTarget(req).search);
+    const keys = [...params.keys()];
+    if (
+      keys.length === 0 ||
+      keys.some((key) => key !== 'workId' && key !== 'operationId') ||
+      new Set(keys).size !== keys.length
+    ) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+    }
+    const workId = params.get('workId');
+    const operationId = params.get('operationId');
+    if (workId !== null && !WORK_ID_PATTERN.test(workId)) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+    }
+    if (operationId !== null && !isBoundedText(operationId, 160)) {
+      throw new ServiceError('invalid_request', 400, SAFE_MESSAGES.invalid_request);
+    }
+    const snapshot = await currentWorkStatusSnapshot();
+    if (signal.aborted || res.destroyed) return;
+    // Read-only: no expected version, no queue slot of its own, no write. The
+    // same lookup rule 9a performs answers "did this operation commit?".
+    const replay =
+      operationId === null
+        ? null
+        : model.resolveCurrentWorkReplay(snapshot.state, {
+            operationId,
+            workId: workId ?? undefined,
+          });
+    sendJson(
+      req,
+      res,
+      200,
+      publicCurrentWorkStatus(
+        snapshot.state,
+        snapshot.fileDigest ?? snapshot.currentDigest ?? null,
+        snapshot.stateVersion ?? snapshot.state?.stateVersion ?? null,
+        { workId, operationId },
+        replay,
+      ),
+    );
+  }
+
   const routes = new Map([
     [
       '/',
@@ -1468,6 +2428,40 @@ export async function startReviewService(statePath, options = {}) {
         actionRequired: true,
         queryAllowed: false,
         handler: handleRender,
+      },
+    ],
+    // Current work (§10.1): same server, port, origin policy and queue.
+    [
+      '/api/current-work/preview',
+      {
+        allow: 'POST',
+        session: true,
+        originRequired: true,
+        actionRequired: true,
+        queryAllowed: false,
+        handler: handleCurrentWorkPreview,
+      },
+    ],
+    [
+      '/api/current-work/save',
+      {
+        allow: 'POST',
+        session: true,
+        originRequired: true,
+        actionRequired: true,
+        queryAllowed: false,
+        handler: handleCurrentWorkSave,
+      },
+    ],
+    [
+      '/api/current-work/status',
+      {
+        allow: 'GET',
+        session: true,
+        originRequired: false,
+        actionRequired: false,
+        queryAllowed: true,
+        handler: handleCurrentWorkStatus,
       },
     ],
   ]);

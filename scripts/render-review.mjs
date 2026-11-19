@@ -3,12 +3,14 @@
 import { buildGraphLayout } from './graph-layout.mjs';
 import { graphStyles, initializeGraph, renderGraphShell } from './graph-view.mjs';
 import { deriveNodeIntentSummary, digestValue } from './intent-model.mjs';
-import { deriveFeatureProgress, featureContextFingerprintContent, getFeatureProgressBrowserSource } from './feature-progress.mjs';
+import { deriveCurrentWorkIndex, deriveFeatureProgress, featureContextFingerprintContent, getFeatureProgressBrowserSource } from './feature-progress.mjs';
 import { initializeReview, renderDeferQueue, renderDirectory } from './review-ui.mjs';
 import { deriveRoadmap } from './roadmap-model.mjs';
-import { featureProgressCardLines, featureProgressSummaryMap, renderFeatureProgressDetail, renderRoadmapDetail, renderRoadmapFilters, renderRoadmapIndex, roadmapStyles } from './roadmap-ui.mjs';
+import { currentWorkStyles, featureProgressCardLines, featureProgressSummaryMap, renderCurrentWorkBadge, renderCurrentWorkDetail, renderCurrentWorkEditor, renderCurrentWorkEntry, renderCurrentWorkHistory, renderCurrentWorkPreview, renderFeatureProgressDetail, renderRoadmapDetail, renderRoadmapFilters, renderRoadmapIndex, roadmapStyles } from './roadmap-ui.mjs';
 import { deriveProgress, deriveTimeline } from './timeline-model.mjs';
 import { initializeGraphTime, initializeTimeline, renderGraphTimeShell, renderTimelineOverview, renderTimelineShell, timelineStyles } from './timeline-ui.mjs';
+import { compareSnapshots } from './snapshot-diff.mjs';
+import { initializeVersionDiff } from './version-diff-ui.mjs';
 
 const EDGE_LABELS = {
   contains: '包含', serves: '服务于', enables: '支持', constrains: '约束',
@@ -125,6 +127,30 @@ function featureProgressData(state) {
   return { view, byNode, summary: featureProgressSummaryMap(view), fingerprints };
 }
 
+/**
+ * nodeId -> {workId, workTitle, lifecycle} for the card badge on the *first*
+ * viewport. This must match what review-ui.mjs's `currentWorkByNode` computes on
+ * every later refresh (same source `deriveCurrentWorkIndex`, same "best
+ * lifecycle wins" rank), otherwise the badge appears or disappears on reload.
+ */
+function currentWorkByNode(state) {
+  const index = deriveCurrentWorkIndex(state);
+  if (!index || !Array.isArray(index.entries)) return null;
+  const rank = {active: 0, paused: 1, ended: 2};
+  const map = {};
+  for (const entry of index.entries) {
+    if (!entry || typeof entry.nodeId !== 'string') continue;
+    const best = map[entry.nodeId];
+    if (best && (rank[entry.lifecycle] ?? 3) >= (rank[best.lifecycle] ?? 3)) continue;
+    map[entry.nodeId] = {
+      workId: entry.workId,
+      workTitle: entry.workTitle ?? '',
+      lifecycle: entry.lifecycle ?? 'ended',
+    };
+  }
+  return map;
+}
+
 function graphData(state, progress = featureProgressData(state)) {
   const claims = asArray(state.intentClaims);
   const roadmapByNode = new Map(asArray(state.roadmapItems)
@@ -215,7 +241,12 @@ export function renderReview(snapshot, options = {}) {
   const graphShell = renderGraphShell({ graph: GRAPH_LABELS }, { inspector: false, roadmap:true, timeline: true, timelineContent: timeline, filters: true, arrange: true });
   const directoryProgress = {};
   for (const feature of featureProgress.view.features) directoryProgress[feature.nodeId] = featureProgressCardLines(feature);
-  const directory = renderDirectory(state, { writable, readOnlyReason, progress: directoryProgress });
+  const directory = renderDirectory(state, {
+    writable,
+    readOnlyReason,
+    progress: directoryProgress,
+    currentWork: currentWorkByNode(state),
+  });
   const deferQueue = renderDeferQueue(state);
   const bootstrap = {
     projectId: state.project?.id,
@@ -247,12 +278,20 @@ export function renderReview(snapshot, options = {}) {
     `featureProgressSummaryMap: ${featureProgressSummaryMap.toString()},\n` +
     `featureProgressCardLines: ${featureProgressCardLines.toString()},\n` +
     `featureProgressApi: (${getFeatureProgressBrowserSource()}),\n` +
+    `renderCurrentWorkEntry: ${renderCurrentWorkEntry.toString()},\n` +
+    `renderCurrentWorkBadge: ${renderCurrentWorkBadge.toString()},\n` +
+    `renderCurrentWorkDetail: ${renderCurrentWorkDetail.toString()},\n` +
+    `renderCurrentWorkEditor: ${renderCurrentWorkEditor.toString()},\n` +
+    `renderCurrentWorkPreview: ${renderCurrentWorkPreview.toString()},\n` +
+    `renderCurrentWorkHistory: ${renderCurrentWorkHistory.toString()},\n` +
     `deriveRoadmap: ${deriveRoadmap.toString()},\n` +
     `deriveProgress: ${deriveProgress.toString()},\n` +
     `deriveTimeline: ${deriveTimeline.toString()},\n` +
     `renderTimelineOverview: ${renderTimelineOverview.toString()},\n` +
     `initializeTimeline: ${initializeTimeline.toString()},\n` +
     `initializeGraphTime: ${initializeGraphTime.toString()},\n` +
+    `compareSnapshots: ${compareSnapshots.toString()},\n` +
+    `initializeVersionDiff: ${initializeVersionDiff.toString()},\n` +
     `initializeGraph: ${initializeGraph.toString()},\n` +
     `buildGraphLayout: ${buildGraphLayout.toString()}\n` +
     `});`;
@@ -273,6 +312,7 @@ ${graphStyles}
 ${reviewStyles}
 ${timelineStyles}
 ${roadmapStyles}
+${currentWorkStyles}
 </style></head><body><main class="shell">
 <header class="top" id="review-header" data-testid="review-header" data-state-version="${escapeAttribute(state.stateVersion)}" data-file-digest="${escapeAttribute(fileDigest)}" data-writable="${writable}">
   <div class="top-main">
@@ -332,12 +372,17 @@ ${roadmapStyles}
     </header>
     <div id="pending-banner" class="pending-banner" role="status" hidden></div>
     <div id="review-alert" class="alert" role="alert" tabindex="-1" hidden></div>
-    <div id="review-status" class="status" role="status" tabindex="-1" aria-live="polite"></div>
     <div id="review-panel-body" class="review-panel-body">
       <p class="muted">从左侧图谱、意图目录或暂缓队列选择节点/意图/提案，再在这里查看完整内容并执行动作。需要启用脚本才能预览与保存。</p>
     </div>
     </div>
+    <div id="review-status" class="status" role="status" tabindex="-1" aria-live="polite"></div>
     <section id="history-panel" class="history-panel" aria-label="历史版本只读详情" hidden></section>
+    <section id="version-diff-panel" class="version-diff-panel" aria-label="版本差异只读详情" hidden></section>
+    <section id="current-work-panel" class="current-work-panel" role="region" aria-labelledby="current-work-panel-title" tabindex="-1" data-testid="current-work-panel" hidden>
+      <header class="current-work-panel-head"><div><p class="eyebrow">本轮在做 · 保存记录（非评审、非交付、非授权）</p><h2 id="current-work-panel-title" tabindex="-1">本轮在做</h2></div><button type="button" id="current-work-close" data-testid="current-work-close" aria-label="关闭本轮在做" hidden>关闭</button></header>
+      <div id="current-work-panel-body"></div>
+    </section>
   </aside>
 </div>
 <noscript><p class="notice">此页需要启用本地脚本才能预览与保存；静态地图不提供写入能力。</p></noscript>

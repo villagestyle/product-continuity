@@ -63,6 +63,7 @@ html.continuity-graph-fullscreen,html.continuity-graph-fullscreen body{overflow:
 .graph-viewport[data-detail=overview] .graph-node:has(.graph-node-folded) .graph-node-select{padding-bottom:32px}
 .graph-viewport[data-detail=overview] .graph-node-details{opacity:0}
 .graph-viewport[data-detail=overview] .graph-node:hover .graph-node-details,.graph-viewport[data-detail=overview] .graph-node:focus-within .graph-node-details{opacity:1}
+.graph-diff-ghost{position:absolute;width:224px;height:128px;z-index:1}.graph-diff-ghost .graph-node-select{border:2px dashed var(--red,#9a4038);background:var(--red-soft,#f7e9e6)}.graph-node[data-diff=added] .graph-node-select{border:2px solid var(--green,#246b54);background:#f5fbf7}.graph-node[data-diff=changed] .graph-node-select{border-left:5px solid var(--amber,#855c12)}.graph-node[data-diff=removed] .graph-node-select{border:2px dashed var(--red,#9a4038)}.graph-diff-badge{position:absolute;top:-15px;left:8px;z-index:3;max-width:208px;padding:2px 6px;border:1px solid var(--line);border-radius:4px;background:var(--amber-soft,#f7f0dc);color:var(--amber,#855c12);font-size:12px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}.graph-diff-badge[data-kind=added]{background:var(--green-soft,#e5f1ea);color:var(--green,#246b54)}.graph-diff-badge[data-kind=removed]{background:var(--red-soft,#f7e9e6);color:var(--red,#9a4038)}.graph-node.is-diff-context{opacity:.55}.graph-diff-ghost.is-dim{opacity:.22}.graph-viewport[data-detail=compact] .graph-diff-badge{font-size:16px;top:-20px}.graph-viewport[data-detail=overview] .graph-diff-badge{font-size:20px;top:-25px}.graph-diff-folded{color:var(--amber,#855c12);font-weight:600}.graph-node[data-diff] .graph-node-folded{font-size:11px}.graph-diff-key{position:absolute;right:12px;top:80px;max-width:220px;z-index:2;padding:.35rem .5rem;background:var(--surface,#fff);border:1px solid var(--line);border-radius:4px;font-size:.72rem;color:var(--muted);pointer-events:none}
 `;
 
 export function renderGraphShell(labels, options = {}) {
@@ -227,6 +228,20 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
   let minimapPaints = 0;
   let drawnEdges = 0;
   let culledEdges = 0;
+  let stablePositions = null;
+  const diffKey = document.createElement('p');
+  diffKey.className='graph-diff-key'; diffKey.hidden=true;
+  diffKey.textContent='＋ 新增 · ~ 修改 · − 移除\n虚线叠影仅属对比，不计入所选版本';
+  viewport.append(diffKey);
+  function changeCount(id) {
+    let count=0;
+    for(const target of data.comparison?.changedNodeIds || []) {
+      for(let parent=hierarchy.get(target)?.parentId;parent!=null;parent=hierarchy.get(parent)?.parentId) {
+        if(parent===id){count++;break;}
+      }
+    }
+    return count;
+  }
 
   const arrangeEnabled = hooks.arrange === true;
   const storageKey = typeof hooks.storageKey === 'string' ? hooks.storageKey : '';
@@ -341,6 +356,10 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       const count = document.createElement('span');
       count.className = 'graph-group-count';
       count.textContent = String(group.nodeIds.filter((id) => positions.has(id)).length);
+      if(data.comparison && group.collapsed) {
+        const changed=group.nodeIds.filter(id=>sourceById.get(id)?.diff || changeCount(id)).length;
+        if(changed)count.textContent+=' · 含变化 '+changed;
+      }
       const remove = button('×', 'graph-group-remove');
       remove.setAttribute('aria-label', ui.groupRemove + ': ' + group.label);
       remove.addEventListener('click', (event) => {
@@ -558,6 +577,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       nodeDialogContent.append(section);
     };
     appendSection(data.labels.detailsDescription ?? '说明', [source.description]);
+    appendSection('版本对比', [source.diff?.label, source.diffGhost ? source.diffGhostLabel+' · 对比叠影，不是所选版本的节点。' : null]);
     const progressText = source.progressDetail || [source.progressLine, source.progressNext].filter(Boolean).join('\n');
     appendSection(data.labels.detailsProgress ?? '进度详情', [progressText,
       progressText?.includes(source.delivery?.title) ? null : source.delivery?.title]);
@@ -579,7 +599,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
         fromLabel.textContent = from?.label ?? edge.from;
         const relation = document.createElement('span');
         relation.className = 'relation-kind';
-        relation.textContent = edge.label ?? edge.kind;
+        relation.textContent = (edge.diff ? {added:'＋ 新增 · ',removed:'− 移除 · ',changed:'~ 修改 · '}[edge.diff] : '')+(edge.label ?? edge.kind)+(edge.diffGhost?' · 对比叠影':'');
         const toLabel = document.createElement('span');
         toLabel.className = 'relation-node';
         toLabel.textContent = to?.label ?? edge.to;
@@ -719,7 +739,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
     // Review mode uses ?claim=... while the graph keeps #node-...; never drop
     // the query when the graph updates its hash.
     try {
-      if (updateUrl) {
+      if (updateUrl && !sourceById.get(id)?.diff) {
       const nextUrl = location.pathname + location.search + (anchor ? '#' + anchor : '');
       history.replaceState(null, '', nextUrl);
       }
@@ -742,7 +762,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
     buildAdjacency();
     layout = buildLayout(data.nodes, data.edges, [...collapsed]);
     for (const node of layout.nodes) {
-      const custom = customPositions.get(node.id);
+      const custom = customPositions.get(node.id) || stablePositions?.get(node.id);
       if (custom) { node.x = Math.max(0, custom.x); node.y = Math.max(0, custom.y); }
     }
     positions = new Map(layout.nodes.map((node) => [node.id, node]));
@@ -755,7 +775,8 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       if (groupHiddenIds.has(node.id)) continue;
       const source = sourceById.get(node.id);
       const wrapper = document.createElement('div');
-      wrapper.className = 'graph-node';
+      wrapper.className = source.diffGhost ? 'graph-diff-ghost' : 'graph-node';
+      if(source.diff) wrapper.dataset.diff=source.diff.kind;
       wrapper.dataset.nodeId = node.id;
       wrapper.style.left = node.x + 'px';
       wrapper.style.top = node.y + 'px';
@@ -766,7 +787,8 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
         + (source.roadmapLabel ? ' · ' + source.roadmapLabel : '')
         + (source.progressLine ? ' · ' + source.progressLine : '')
         + (source.progressNext ? ' · ' + source.progressNext : '')
-        + (source.progressDetail ? ' · ' + source.progressDetail : ''));
+        + (source.progressDetail ? ' · ' + source.progressDetail : '')
+        + (source.diff ? ' · '+source.diff.label : '') + (source.diffGhost?' · 对比叠影，非所选版本节点':''));
       const type = document.createElement('span');
       type.className = 'graph-node-type';
       type.textContent = source.kindLabel;
@@ -850,10 +872,16 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
         openNodeDetails(node.id, detailsButton);
       });
       wrapper.append(selectButton, detailsButton);
+      if(source.diff) {
+        const marker=document.createElement('span');marker.className='graph-diff-badge';marker.dataset.kind=source.diff.kind;
+        marker.textContent=source.diff.label+(source.diffGhost?' · '+source.diffGhostLabel:'');marker.title=marker.textContent;wrapper.append(marker);
+      }
       if (node.collapsed && descendants.get(node.id)) {
         const folded = document.createElement('span');
         folded.className = 'graph-node-folded';
         folded.textContent = descendants.get(node.id) + ' ' + (ui.folded ?? '个节点已收起');
+        const changed=changeCount(node.id);
+        if(changed){folded.textContent=changed+'项变化 · '+folded.textContent;folded.title=folded.textContent;folded.classList.add('graph-diff-folded');selectButton.setAttribute('aria-label',selectButton.getAttribute('aria-label')+' · 分支内含'+changed+'张变化卡片');}
         wrapper.append(folded);
       }
       if (node.childCount) {
@@ -864,7 +892,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
           if (collapsed.has(node.id)) collapsed.delete(node.id); else collapsed.add(node.id);
           rebuild();
           if (!positions.has(selectedId)) select(node.id);
-          fit();
+          if(!data.comparison) fit();
           nodeElements.get(node.id)?.querySelector('.graph-branch-toggle')?.focus({ preventScroll: true });
         });
         wrapper.append(toggle);
@@ -881,19 +909,32 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
 
   function updateMatches() {
     let visibleMatches = 0;
+    const changed = new Set(data.comparison?.changedNodeIds || []);
+    const contextIds = new Set(changed);
+    if(data.comparison) {
+      for(const id of changed)for(let parent=hierarchy.get(id)?.parentId;parent!=null;parent=hierarchy.get(parent)?.parentId)contextIds.add(parent);
+      for(const edge of data.edges)if(changed.has(edge.from)||changed.has(edge.to)){contextIds.add(edge.from);contextIds.add(edge.to);}
+    }
     for (const [id, element] of nodeElements) {
       const inFilter = !filtering || matches.has(id);
       const inFocus = !focusSet || focusSet.has(id);
       element.classList.toggle('is-dim', !inFilter || !inFocus);
-      if (matches.has(id)) visibleMatches++;
+      element.classList.toggle('is-diff-context',Boolean(data.comparison && !changed.has(id)));
+      element.hidden=Boolean(data.comparison?.only && !contextIds.has(id));
+      if (matches.has(id) && !element.hidden && !sourceById.get(id)?.diffGhost) visibleMatches++;
     }
-    const visibleCount = layout.nodes.length - groupHiddenIds.size;
+    const ghostCount=layout.nodes.filter(node=>sourceById.get(node.id)?.diffGhost && !groupHiddenIds.has(node.id)).length;
+    const visibleCount = layout.nodes.length - groupHiddenIds.size - ghostCount;
+    diffKey.hidden=!data.comparison;
     const live = document.querySelector('#graph-live');
     if (live) {
-      live.textContent = (filtering ? matches.size + ' ' + ui.matches : visibleCount + ' ' + ui.nodes)
+      const realMatches=[...matches].filter(id=>!sourceById.get(id)?.diffGhost).length;
+      live.textContent = (filtering ? realMatches + ' ' + ui.matches : visibleCount + ' ' + ui.nodes)
         + (layout.hiddenCount ? ' · ' + layout.hiddenCount + ' ' + ui.folded : '')
         + (groupHiddenIds.size ? ' · ' + groupHiddenIds.size + ' ' + ui.groupHidden : '')
         + (focusSet ? ' · ' + ui.focus + ' ' + focusSet.size + ' ' + ui.focusCount : '');
+      if(ghostCount)live.textContent+=' · '+ghostCount+'个对比叠影';
+      if(data.comparison?.only)live.textContent+=' · 仅看变化（保留关联上下文）';
     }
     const message = document.querySelector('#graph-message');
     message.hidden = Boolean((visibleCount || groupHiddenIds.size) && (!filtering || visibleMatches || matches.size));
@@ -988,7 +1029,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       const c1 = x1 + (forward ? bend : -bend);
       const c2 = x2 + (forward ? -bend : bend);
       const child = to.parentId === from.id ? to : from.parentId === to.id ? from : null;
-      const shelf = child?.shelf && !customPositions.has(from.id) && !customPositions.has(to.id) ? child.shelf : null;
+      const shelf = child?.shelf && !stablePositions && !customPositions.has(from.id) && !customPositions.has(to.id) ? child.shelf : null;
       const parent = child === to ? from : to;
       const route = shelf ? [[parent.x + parent.width, parent.y + parent.height / 2],
         [shelf.laneX, parent.y + parent.height / 2], [shelf.laneX, shelf.laneY],
@@ -1035,10 +1076,11 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
         }
       };
       const connected = emphasize && (edge.from === selectedId || edge.to === selectedId);
-      const strokeWidth = connected ? (data.nodes.length > 40 ? 1.6 : 3.1) : 1.4;
+      const strokeWidth = edge.diff ? 2.8 : connected ? (data.nodes.length > 40 ? 1.6 : 3.1) : 1.4;
       const outOfFocus = Boolean(focusSet && (!focusSet.has(edge.from) || !focusSet.has(edge.to)));
       context.globalAlpha = (filtering && (!matches.has(edge.from) || !matches.has(edge.to))) || outOfFocus ? .2 : 1;
       context.setLineDash(edge.hierarchical ? [] : [5 / scale, 5 / scale]);
+      if(edge.diff)context.setLineDash((edge.diff==='removed'?[3,4]:edge.diff==='added'?[9,3]:[9,3,2,3]).map(n=>n/scale));
       if (connected) {
         // A narrow background-tone casing keeps the highlighted relationship
         // legible where unrelated lines cross it. Same dash pattern, no glow.
@@ -1050,6 +1092,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       // The selected relationships reuse the selection blue so the highlight
       // reads as part of the same selection, not a separate decoration.
       context.strokeStyle = connected ? (data.nodes.length > 40 ? '#58728d' : '#2949a7') : edge.hierarchical ? '#8ca2bc' : '#a2a3b5';
+      if(edge.diff)context.strokeStyle={added:'#246b54',removed:'#9a4038',changed:'#855c12'}[edge.diff];
       context.fillStyle = context.strokeStyle;
       context.lineWidth = strokeWidth / scale;
       trace(connected ? 'selected' : edge.hierarchical ? 'hierarchy' : 'cross');
@@ -1065,14 +1108,14 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       context.lineTo(tip[0] - Math.cos(angle) * arrowLength - Math.sin(angle) * arrowHalf, tip[1] - Math.sin(angle) * arrowLength + Math.cos(angle) * arrowHalf);
       context.lineTo(tip[0] - Math.cos(angle) * arrowLength + Math.sin(angle) * arrowHalf, tip[1] - Math.sin(angle) * arrowLength - Math.cos(angle) * arrowHalf);
       context.fill();
-      const label = edge.label ?? edge.kind;
+      const label = (edge.diff?{added:'＋ ',removed:'− ',changed:'~ '}[edge.diff]:'')+(edge.label ?? edge.kind);
       const labelX = route ? (route[2][0] + route[3][0]) / 2 : .125 * x1 + .375 * c1 + .375 * c2 + .125 * x2;
       const labelY = route ? (route[2][1] + route[3][1]) / 2 : (y1 + y2) / 2;
       // Labels would collide in a dense overview. Keep them for the selected
       // relationships, and show every label once the reader zooms in.
-      if (scale < .48 || (!connected && (data.nodes.length > 40 || scale < .72))) return;
+      if (scale < .48 || (!edge.diff && !connected && (data.nodes.length > 40 || scale < .72))) return;
       if (labelX < visible.left || labelX > visible.right || labelY < visible.top || labelY > visible.bottom) return;
-      if (data.nodes.length > 40 && labelledKinds.has(edge.kind)) return;
+      if (!edge.diff && data.nodes.length > 40 && labelledKinds.has(edge.kind)) return;
       labelledKinds.add(edge.kind);
       context.font = '11px "Segoe UI", "Microsoft YaHei", sans-serif';
       const labelWidth = context.measureText(label).width;
@@ -1088,8 +1131,9 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
     const connectedEdges = [];
     const selectedDegree = layout.edges.reduce((count, edge) => count + (edge.from === selectedId || edge.to === selectedId ? 1 : 0), 0);
     for (const edge of layout.edges) {
-      if (!edge.hierarchical && !showCross) continue;
+      if (!edge.hierarchical && !showCross && !edge.diff) continue;
       if (groupHiddenIds.has(edge.from) || groupHiddenIds.has(edge.to)) continue;
+      if(nodeElements.get(edge.from)?.hidden || nodeElements.get(edge.to)?.hidden)continue;
       if (edge.from === selectedId || edge.to === selectedId) connectedEdges.push(edge);
       else drawEdge(edge);
     }
@@ -1125,7 +1169,7 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       miniCacheContext.setTransform(dpr, 0, 0, dpr, 0, 0);
       miniCacheContext.clearRect(0, 0, w, h);
       for (const node of positions.values()) {
-        if (groupHiddenIds.has(node.id)) continue;
+        if (groupHiddenIds.has(node.id) || nodeElements.get(node.id)?.hidden) continue;
         const source = sourceById.get(node.id);
         if (!source) continue;
         miniCacheContext.fillStyle = palette[source.kind] || palette.unknown;
@@ -1742,16 +1786,32 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
 
   function refresh(nextData, options = {}) {
     cancelGesture();
-    const focusedNodeId = document.activeElement?.closest?.('.graph-node')?.dataset.nodeId;
+    if(options.stable && !stablePositions && data.nodes.length) {
+      stablePositions=new Map(buildLayout(data.nodes,data.edges).nodes.map(node=>[node.id,{x:node.x,y:node.y}]));
+      for(const [id,point] of positions || [])stablePositions.set(id,{x:point.x,y:point.y});
+      for(const [id,point] of customPositions)stablePositions.set(id,{...point});
+    } else if(!options.stable)stablePositions=null;
+    const focusedNodeId = document.activeElement?.closest?.('[data-node-id]')?.dataset.nodeId;
     if (options.updateUrl !== undefined) updateUrl = options.updateUrl;
     data = { ...nextData, labels: nextData.labels || data.labels };
+    if(stablePositions) {
+      let bottom=Math.max(40,...[...stablePositions.values()].map(point=>point.y+180));
+      for(const node of buildLayout(data.nodes,data.edges).nodes) {
+        if(stablePositions.has(node.id))continue;
+        let x=node.x,y=node.y;
+        if([...stablePositions.values()].some(p=>Math.abs(p.x-x)<250&&Math.abs(p.y-y)<160)){y=bottom;bottom+=180;}
+        stablePositions.set(node.id,{x,y});
+      }
+    }
     sourceById = new Map(data.nodes.map((node) => [node.id, node]));
     sourceByAnchor = new Map(data.nodes.filter((node) => node.anchor).map((node) => [node.anchor, node.id]));
     indexHierarchy();
     if (options.updateUrl !== false) pruneOrganize();
     for (const id of [...collapsed]) if (!sourceById.has(id)) collapsed.delete(id);
     if (!sourceById.has(selectedId)) selectedId = data.nodes[0]?.id;
+    if(sourceById.has(options.selectedId))selectedId=options.selectedId;
     matches = new Set(data.nodes.map((node) => node.id));
+    if(options.expand)collapsed.clear();
     rebuild();
     if (hasFilters) applyFilters();
     if (options.view) restoreView(options.view);
@@ -1771,6 +1831,19 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
   }
 
   const api = {
+    locateNodes(ids) {
+      const targets=ids.filter(id=>sourceById.has(id));if(!targets.length)return;
+      revealPaths(targets);
+      for(const group of groups)if(group.nodeIds.some(id=>targets.includes(id)))group.collapsed=false;
+      rebuild();const previousUrl=updateUrl;updateUrl=false;try{select(targets[0],true);}finally{updateUrl=previousUrl;}
+      if(targets.length>1){
+        const points=targets.map(id=>positions.get(id)).filter(Boolean);
+        const left=Math.min(...points.map(p=>p.x)),right=Math.max(...points.map(p=>p.x+p.width));
+        const top=Math.min(...points.map(p=>p.y)),bottom=Math.max(...points.map(p=>p.y+p.height));
+        scale=Math.min(1,Math.max(.1,Math.min((width-40)/(right-left),(height-170)/(bottom-top))));
+        tx=width/2-(left+right)/2*scale;ty=(height+30)/2-(top+bottom)/2*scale;manualView=true;requestDraw();
+      }
+    },
     selectNode(id, center = false, focusInspector = false) { select(id, center, focusInspector); },
     refresh,
     restoreView,

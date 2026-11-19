@@ -174,6 +174,11 @@
         {
           "if": { "properties": { "nextActionsStatus": { "enum": ["none", "not_prepared"] } }, "required": ["nextActionsStatus"] },
           "then": { "properties": { "nextActions": { "maxItems": 0 } } }
+        },
+        {
+          "description": "Support digests describe a current-work record only; an ordinary checkpoint may not carry them.",
+          "if": { "required": ["workSupportSnapshots"] },
+          "then": { "required": ["workContext"] }
         }
       ],
       "properties": {
@@ -190,7 +195,22 @@
         "nextActions": { "type": "array", "items": { "$ref": "#/$defs/checkpointNextAction" }, "maxItems": 50 },
         "nextActionsStatus": { "enum": ["recorded", "none", "not_prepared"] },
         "basis": { "$ref": "#/$defs/checkpointBasis" },
-        "delivery": { "$ref": "#/$defs/checkpointDelivery" }
+        "delivery": { "$ref": "#/$defs/checkpointDelivery" },
+        "workContext": { "$ref": "#/$defs/workContext" },
+        "adoptedBasis": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/adoptedBasis" },
+          "description": "Explicitly adopted basis claims for this record (sibling of workContext, not inside it). Absent or empty means no adopted claim; this array is per record and is never inherited."
+        },
+        "workSupportSnapshots": {
+          "type": "array",
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/workSupportSnapshot" },
+          "description": "Additive and optional: one content digest per implementation/verification support id, closure evidence id and connected check id, sorted unique by collection then id. Only a current-work record may carry it (sibling of workContext). Absent means the record cannot detect same-id support content changes; it never means 'unchanged'."
+        }
       }
     },
     "checkpointDelivery": {
@@ -965,6 +985,364 @@
         "migratedAt": { "type": "string", "format": "date-time" },
         "toolVersion": { "$ref": "#/$defs/nonEmpty" },
         "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "workContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One round's saved work statement on a Feature checkpoint (references/current-work-contract.md §3/§4). Every business key is required: a record is a complete snapshot of its revision, never a patch, and absent-vs-null is not a meaningful distinction here.",
+      "required": [
+        "version",
+        "workId",
+        "workTitle",
+        "operation",
+        "nodeId",
+        "objective",
+        "scope",
+        "exclusions",
+        "acceptanceCriteria",
+        "selection",
+        "upper",
+        "lifecycle",
+        "resume"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "workId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^work:[A-Za-z0-9._:-]{1,150}$",
+          "description": "Stable identity chosen by the service on first save; echoed thereafter and never reused for another capability."
+        },
+        "workTitle": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "operation": { "enum": ["open", "adjust", "pause", "resume", "end"] },
+        "nodeId": { "$ref": "#/$defs/checkpointId" },
+        "objective": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" }
+          ],
+          "description": "null means not recorded in this revision; it is never inherited from an earlier revision."
+        },
+        "scope": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/workScopeItem" } },
+        "exclusions": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/workScopeItem" } },
+        "acceptanceCriteria": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/workScopeItem" } },
+        "selection": { "$ref": "#/$defs/workSelection" },
+        "upper": { "$ref": "#/$defs/upperLayerRefs" },
+        "lifecycle": { "$ref": "#/$defs/workLifecycle" },
+        "resume": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/workResume" }
+          ]
+        }
+      }
+    },
+    "workScopeItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement"],
+      "properties": {
+        "statement": { "type": "string", "minLength": 1, "maxLength": 400, "pattern": "\\S" }
+      }
+    },
+    "workSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sourceRefs"],
+      "description": "How this round's scope was selected. agent_proposed_unselected is stored as a draft proposal and is never promoted by repetition.",
+      "properties": {
+        "kind": { "enum": ["user_selected", "within_task_authorization", "agent_proposed_unselected"] },
+        "sourceRefs": {
+          "type": "array",
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" }
+        }
+      }
+    },
+    "upperLayerRefs": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Self-describing upper layers: a reference plus the bounded observation of what it said at save time. null / [] mean this revision did not attempt the layer; they never mean the layer does not exist.",
+      "required": ["productGoal", "stage", "openUserPaths"],
+      "properties": {
+        "productGoal": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/layerObservation" }
+          ]
+        },
+        "stage": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/layerObservation" }
+          ]
+        },
+        "openUserPaths": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/layerObservation" }
+        }
+      }
+    },
+    "layerObservation": {
+      "description": "Three distinct values, never merged: found (ref + bounded observation), gap (looked, nothing qualifies), unavailable (ref saved, content unobtainable at save time).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "ref", "observed"],
+          "properties": {
+            "state": { "const": "found" },
+            "ref": { "$ref": "#/$defs/layerRef" },
+            "observed": { "$ref": "#/$defs/layerObservationValue" }
+          },
+          "allOf": [
+            {
+              "description": "A claim's assessment is compared as one digest; every other collection has no assessment axis.",
+              "if": {
+                "properties": { "ref": { "properties": { "collection": { "const": "intentClaim" } }, "required": ["collection"] } },
+                "required": ["ref"]
+              },
+              "then": {
+                "properties": {
+                  "observed": { "properties": { "confirmation": { "properties": { "assessmentDigest": { "$ref": "#/$defs/sha256" } } } } }
+                }
+              },
+              "else": {
+                "properties": {
+                  "observed": { "properties": { "confirmation": { "properties": { "assessmentDigest": { "type": "null" } } } } }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": {
+            "state": { "const": "gap" },
+            "reason": {
+              "enum": ["no_relation", "kind_only", "candidate_only"],
+              "description": "Why nothing qualified. Optional because the honest minimum is 'looked and found nothing'; a writer that can name the reason category does."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "ref"],
+          "properties": {
+            "state": { "const": "unavailable" },
+            "ref": { "$ref": "#/$defs/layerRef" }
+          }
+        }
+      ]
+    },
+    "layerRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection", "id"],
+      "properties": {
+        "collection": { "enum": ["node", "roadmapItem", "intentClaim", "checkpoint", "evidence"] },
+        "id": { "$ref": "#/$defs/checkpointId" }
+      }
+    },
+    "layerObservationValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the target said at save time. digest covers the content projection only (confirmation fields excluded); confirmation is the separate axis.",
+      "required": ["digest", "label", "kind", "origin", "confirmation", "snapshotPath"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/sha256" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "kind": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+        "origin": { "$ref": "#/$defs/layerOrigin" },
+        "confirmation": { "$ref": "#/$defs/layerConfirmation" },
+        "snapshotPath": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "string",
+              "maxLength": 160,
+              "pattern": "^\\.product-continuity/current-work/[0-9a-f]{16}/[0-9a-f]{64}\\.json$"
+            }
+          ]
+        }
+      }
+    },
+    "layerOrigin": {
+      "description": "Only three machine-checkable ways a layer target may be attached. 'kind looked right' is not one of them.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "edgeId", "edgeKind"],
+          "properties": {
+            "kind": { "const": "edge" },
+            "edgeId": { "$ref": "#/$defs/checkpointId" },
+            "edgeKind": { "enum": ["contains", "part_of"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "claimId", "basisRefIndex"],
+          "properties": {
+            "kind": { "const": "adoptedBasis" },
+            "claimId": { "$ref": "#/$defs/checkpointId" },
+            "basisRefIndex": { "type": "integer", "minimum": 0, "maximum": 19 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sourceRefIndex", "authorizationRef"],
+          "properties": {
+            "kind": { "const": "userSelection" },
+            "sourceRefIndex": { "type": "integer", "minimum": 0, "maximum": 9 },
+            "authorizationRef": { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" }
+          }
+        }
+      ]
+    },
+    "layerConfirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A separate axis from content, derived by the writer and never typed by a human. assessmentDigest covers a claim's assessment ({disposition, contentDigest, reviewId}) as one sha256, so an assessment or review edit is a confirmation change, never content.",
+      "required": ["status", "decisionId", "assessmentDigest"],
+      "properties": {
+        "status": { "enum": ["confirmed", "candidate", "unconfirmed", "not_applicable"] },
+        "decisionId": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/nonEmpty" }
+          ]
+        },
+        "assessmentDigest": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/sha256" }
+          ]
+        }
+      }
+    },
+    "workLifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "endedReason", "endedNote"],
+      "properties": {
+        "status": { "enum": ["active", "paused", "ended"] },
+        "endedReason": {
+          "anyOf": [
+            { "type": "null" },
+            { "enum": ["handoff", "cancelled", "scope_completed", "other"] }
+          ]
+        },
+        "endedNote": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "ended" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "endedReason": { "enum": ["handoff", "cancelled", "scope_completed", "other"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["active", "paused"] } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "endedReason": { "type": "null" },
+              "endedNote": { "type": "null" }
+            }
+          }
+        }
+      ]
+    },
+    "workResume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stopPoint", "nextStep", "responsibility", "authorizationRequired"],
+      "properties": {
+        "stopPoint": { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" },
+        "nextStep": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" }
+          ]
+        },
+        "responsibility": { "enum": ["agent", "user", "device_operator", "unknown"] },
+        "authorizationRequired": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": { "enum": ["none", "source_write", "test_execution", "state_write", "service_restart", "distribution"] }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "authorizationRequired": { "contains": { "const": "none" } } },
+            "required": ["authorizationRequired"]
+          },
+          "then": { "properties": { "authorizationRequired": { "maxItems": 1 } } }
+        }
+      ]
+    },
+    "adoptedBasis": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One explicitly adopted intent claim. contentDigest is the sha256 of canonicalStringify({statement, scope, conditions, exceptions}) at adoption; snapshotPath is the optional sidecar holding that content; confirmation is the separate confirmation fact at adoption ({status, decisionId, assessmentDigest}), never inside that digest.",
+      "required": ["claimId", "contentDigest", "snapshotPath", "confirmation"],
+      "properties": {
+        "claimId": { "$ref": "#/$defs/nonEmpty" },
+        "contentDigest": { "$ref": "#/$defs/sha256" },
+        "snapshotPath": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "string",
+              "maxLength": 1024,
+              "pattern": "^\\.product-continuity/current-work/[0-9a-f]{16}/[0-9a-f]{64}\\.json$"
+            }
+          ]
+        },
+        "confirmation": { "$ref": "#/$defs/layerConfirmation" }
+      },
+      "allOf": [
+        {
+          "description": "Adoption always targets an intent claim, so its confirmation status is never 'not_applicable' and assessmentDigest is always a digest.",
+          "properties": {
+            "confirmation": {
+              "properties": {
+                "status": { "enum": ["confirmed", "candidate", "unconfirmed"] },
+                "assessmentDigest": { "$ref": "#/$defs/sha256" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "workSupportSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One saved content digest for one support id: a sha256 over the id's content projection at save time (node/evidence through the layer content projection, check through the check+findings projection). Entries are sorted unique by collection then id; this is what lets a read say 'this support content changed', which ids alone cannot.",
+      "required": ["collection", "id", "digest"],
+      "properties": {
+        "collection": { "enum": ["node", "evidence", "check"] },
+        "id": { "$ref": "#/$defs/checkpointId" },
+        "digest": { "$ref": "#/$defs/sha256" }
       }
     }
   }

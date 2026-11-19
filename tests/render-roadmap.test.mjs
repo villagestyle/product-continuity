@@ -5,7 +5,7 @@ import { Script, runInNewContext } from 'node:vm';
 import { deriveRoadmap } from '../scripts/roadmap-model.mjs';
 import { digestValue } from '../scripts/intent-model.mjs';
 import { deriveFeatureProgress, getFeatureProgressBrowserSource, selectFeatureContext } from '../scripts/feature-progress.mjs';
-import { featureProgressCardLines, featureProgressSummaryMap, renderFeatureProgressDetail, renderRoadmapDetail, renderRoadmapIndex, renderRoadmapFilters } from '../scripts/roadmap-ui.mjs';
+import { featureProgressCardLines, featureProgressSummaryMap, renderCurrentWorkDetail, renderFeatureProgressDetail, renderRoadmapDetail, renderRoadmapIndex, renderRoadmapFilters } from '../scripts/roadmap-ui.mjs';
 import { renderDirectory } from '../scripts/review-ui.mjs';
 import { renderReview } from '../scripts/render-review.mjs';
 import { renderMap } from '../scripts/render-map.mjs';
@@ -17,6 +17,28 @@ const featureState = JSON.parse(await readFile(new URL('../examples/feature-prog
 const featureDigest = (content) => digestValue(content);
 const featureView = () => deriveFeatureProgress(featureState, { includeRetired: true, digest: featureDigest });
 const featureDetail = (nodeId = 'capability:progress-resume') => selectFeatureContext(featureState, nodeId, { digest: featureDigest });
+
+test('current-work detail distinguishes missing support digests from comparable snapshots', () => {
+  const base = {
+    workId: 'work:synthetic',
+    workTitle: 'Synthetic work',
+    nodeId: 'capability:synthetic',
+    lifecycle: {status: 'active', endedReason: null, endedNote: null},
+    contextStatus: 'unchanged',
+    revisionCount: 1,
+    upper: {},
+    changes: [],
+  };
+  const legacy = renderCurrentWorkDetail({...base, supportDigestSource: 'missing', supportContentComparable: false});
+  assert.match(legacy, /data-testid="current-work-support-comparison" data-comparable="false"/);
+  assert.match(legacy, /同 ID 内容无法比较/);
+  assert.match(legacy, /不表示材料未变化/);
+  const comparable = renderCurrentWorkDetail({...base, supportDigestSource: 'persisted', supportContentComparable: true});
+  assert.match(comparable, /data-testid="current-work-support-comparison" data-comparable="true"/);
+  const unverified = renderCurrentWorkDetail({...base, supportDigestSource: 'unverified', supportContentComparable: false});
+  assert.match(unverified, /data-testid="current-work-support-comparison" data-comparable="false"/);
+  assert.match(unverified, /当前页面无法重新计算摘要/);
+});
 
 test('roadmap model and all embedded render helpers run without module closures',()=>{
   const state=makeMcpState(), view=deriveRoadmap(state);
