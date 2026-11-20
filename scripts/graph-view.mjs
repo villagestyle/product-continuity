@@ -576,7 +576,23 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       }
       nodeDialogContent.append(section);
     };
-    appendSection(data.labels.detailsDescription ?? '说明', [source.description]);
+    // One shared projection: the node's own (original) text is quoted, the
+    // missing independent purpose is stated, and evidence nodes also list the
+    // saved owners of this material. Nothing is inferred from the title. It is
+    // rendered as text so this read-only dialog injects no markup.
+    if (typeof source.displayText === 'string' && source.displayText) {
+      const display = document.createElement('section');
+      display.className = 'graph-node-dialog-display';
+      for (const line of source.displayText.split('\n')) {
+        if (!line.trim()) continue;
+        const paragraph = document.createElement('p');
+        paragraph.textContent = line;
+        display.append(paragraph);
+      }
+      nodeDialogContent.append(display);
+    } else {
+      appendSection(data.labels.detailsDescription ?? '说明', [source.description]);
+    }
     appendSection('版本对比', [source.diff?.label, source.diffGhost ? source.diffGhostLabel+' · 对比叠影，不是所选版本的节点。' : null]);
     const progressText = source.progressDetail || [source.progressLine, source.progressNext].filter(Boolean).join('\n');
     appendSection(data.labels.detailsProgress ?? '进度详情', [progressText,
@@ -1791,7 +1807,10 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
       for(const [id,point] of positions || [])stablePositions.set(id,{x:point.x,y:point.y});
       for(const [id,point] of customPositions)stablePositions.set(id,{...point});
     } else if(!options.stable)stablePositions=null;
-    const focusedNodeId = document.activeElement?.closest?.('[data-node-id]')?.dataset.nodeId;
+    // Only a node card inside the graph counts: the review panel's work form also
+    // carries a `data-node-id`, and a repaint must not treat the human typing there
+    // as "a graph node had the focus".
+    const focusedNodeId = document.activeElement?.closest?.('#graph-world [data-node-id]')?.dataset.nodeId;
     if (options.updateUrl !== undefined) updateUrl = options.updateUrl;
     data = { ...nextData, labels: nextData.labels || data.labels };
     if(stablePositions) {
@@ -1816,7 +1835,13 @@ export function initializeGraph(data, buildLayout, hooks = {}) {
     if (hasFilters) applyFilters();
     if (options.view) restoreView(options.view);
     if (options.fit) { collapsed.clear(); rebuild(); fit(); }
-    if (focusedNodeId) nodeElements.get(focusedNodeId)?.querySelector('.graph-node-select')?.focus({ preventScroll: true });
+    // The keyboard focus is restored only while the graph still holds it: a state
+    // re-read may land while the human is typing elsewhere (a work draft in the
+    // review panel), and that repaint must not pull the focus back to a node.
+    const graphHoldsFocus = !document.activeElement
+      || document.activeElement === document.body
+      || Boolean(document.activeElement.closest?.('#graph-world'));
+    if (focusedNodeId && graphHoldsFocus) nodeElements.get(focusedNodeId)?.querySelector('.graph-node-select')?.focus({ preventScroll: true });
     requestDraw();
   }
 

@@ -8,6 +8,7 @@ import { graphStyles, initializeGraph, renderGraphShell } from './graph-view.mjs
 import { deriveNodeIntentSummary, digestValue, getIntentContent } from './intent-model.mjs';
 import { deriveFeatureProgress, featureContextFingerprintContent, getFeatureProgressBrowserSource } from './feature-progress.mjs';
 import { deriveRoadmap } from './roadmap-model.mjs';
+import { nodeDisplayHtml, nodeDisplayProjection, nodeDisplayText } from './node-display.mjs';
 import { featureProgressCardLines, featureProgressSummaryMap, initializeStaticRoadmap, renderFeatureProgressDetail, renderRoadmapDetail, renderRoadmapFilters, renderRoadmapIndex, roadmapStyles } from './roadmap-ui.mjs';
 import { validateStateReferences } from './validate-state.mjs';
 
@@ -599,6 +600,15 @@ function renderNodeCard02(node, context) {
     : '';
   const featureProgress = node.kind === 'capability' ? context.featureProgressByNode?.get(node.id) : null;
   const progressLines = featureProgress ? featureProgressCardLines(featureProgress) : null;
+  // Same shared projection as the review sidebar and the graph dialog: the node's
+  // own original text is quoted, the missing independent purpose is stated, and
+  // the passed-in evidence records are listed (so a real record is not reported
+  // as missing, and a real gap still is).
+  const display = nodeDisplayProjection(node, {
+    nodes: [...nodesById.values()],
+    edges: related,
+    evidence: [...evidenceById.values()],
+  });
   const searchable = [
     node.label,
     node.description,
@@ -612,7 +622,7 @@ function renderNodeCard02(node, context) {
   return `<article class="node" id="${nodeAnchor(node.id)}" data-kind="${escapeHtml(node.kind)}" data-status="${escapeHtml(node.status)}" data-search="${escapeHtml(searchable)}">
     <header><div><div class="eyebrow">${escapeHtml(labels.kind[node.kind] ?? node.kind)}</div><h3>${text(node.label)}</h3></div><span class="badge" data-status="${escapeHtml(node.status)}">${escapeHtml(status)}</span></header>
     <code class="node-id">${text(node.id)}</code>
-    ${node.description ? `<p>${text(node.description)}</p>` : ''}
+    ${nodeDisplayHtml(display)}
     <p class="intent-summary">${escapeHtml(summaryText)}</p>
     ${progressLines ? `<p class="node-progress" data-testid="node-feature-progress" aria-label="${escapeHtml(progressLines.aria)}">${progressLines.delivery ? `<span class="delivery-badge" data-testid="node-feature-delivery" data-delivery="${escapeHtml(progressLines.delivery.status)}" data-needs-review="${progressLines.delivery.needsReview ? 'true' : 'false'}" title="${escapeHtml(progressLines.delivery.title)}">${escapeHtml(progressLines.delivery.text)}</span>` : ''}<span>${escapeHtml(progressLines.line1)}</span><span class="node-progress-next">${escapeHtml(progressLines.line2)}</span></p>` : ''}
     ${summary && (summary.counts.superseded || summary.counts.retired || summary.counts.dismissed) ? `<p class="muted">${escapeHtml(historyText)}</p>` : ''}
@@ -783,20 +793,25 @@ export function renderMap02(state, language = 'zh-CN') {
   const graphObservations = `${renderCoverage02(state, context)}<section><h2>${escapeHtml(labels.recentCheck)}</h2>${latestCheckSummary}</section><section><h2>${escapeHtml(intent.decisionHistory)}</h2>${decisionsHtmlUnanchored}</section>`;
   const graphJson = JSON.stringify({
     labels: labels.graph,
-    nodes: displayNodes.map((node) => ({
-      id: node.id, label: node.label, kind: node.kind, status: node.status,
-      description: node.description,
-      anchor: nodeAnchor(node.id),
-      kindLabel: labels.kind[node.kind] ?? node.kind,
-      statusLabel: node.statusLabel ?? labels.statuses[node.status] ?? node.status,
-      roadmapLabel: roadmapByNode.has(node.id) ? `规划 ${roadmapByNode.get(node.id).horizon} · ${roadmapByNode.get(node.id).status}` : undefined,
-      ...(node.kind === 'capability' && featureProgressByNode.has(node.id)
-        ? (() => {
-          const lines = featureProgressCardLines(featureProgressByNode.get(node.id));
-          return { progressLine: lines.line1, progressNext: lines.line2, progressDetail: lines.aria, delivery: lines.delivery };
-        })()
-        : {}),
-    })),
+    nodes: displayNodes.map((node) => {
+      const display = nodeDisplayProjection(node, state);
+      return {
+        id: node.id, label: node.label, kind: node.kind, status: node.status,
+        description: node.description,
+        anchor: nodeAnchor(node.id),
+        kindLabel: labels.kind[node.kind] ?? node.kind,
+        sourceLabel: display.sourceLabel,
+        displayText: nodeDisplayText(display),
+        statusLabel: node.statusLabel ?? labels.statuses[node.status] ?? node.status,
+        roadmapLabel: roadmapByNode.has(node.id) ? `规划 ${roadmapByNode.get(node.id).horizon} · ${roadmapByNode.get(node.id).status}` : undefined,
+        ...(node.kind === 'capability' && featureProgressByNode.has(node.id)
+          ? (() => {
+            const lines = featureProgressCardLines(featureProgressByNode.get(node.id));
+            return { progressLine: lines.line1, progressNext: lines.line2, progressDetail: lines.aria, delivery: lines.delivery };
+          })()
+          : {}),
+      };
+    }),
     edges: edges.map((edge) => ({
       id: edge.id, from: edge.from, to: edge.to, kind: edge.kind,
       label: labels.edge[edge.kind] ?? edge.kind,

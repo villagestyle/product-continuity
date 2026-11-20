@@ -34,9 +34,26 @@ export function renderDirectory(state, options = {}) {
   // Shared card-lines projection (nodeId -> featureProgressCardLines output),
   // passed explicitly so this stringified helper keeps no module dependency.
   const progressByNode = options.progress && typeof options.progress === 'object' ? options.progress : null;
-  // nodeId -> the node's active current work entry ({workId, workTitle, lifecycle}).
-  // Rendered as a word badge (§13.2), never merged into the delivery chip.
+  // nodeId -> {nodeId, entries, counts} of every saved work of that node. A
+  // single legacy entry is still accepted, but the runtime always passes the
+  // full grouping: one work is never picked over the others.
   const workByNode = options.currentWork && typeof options.currentWork === 'object' ? options.currentWork : null;
+  const workGroupFor = (nodeId) => {
+    const value = nodeId && workByNode ? workByNode[nodeId] : null;
+    if (!value || typeof value !== 'object') return null;
+    if (typeof value.workId === 'string') {
+      return { entries: [{ workId: value.workId, workTitle: value.workTitle ?? '', lifecycle: value.lifecycle ?? 'ended' }], counts: { active: value.lifecycle === 'active' ? 1 : 0, paused: value.lifecycle === 'paused' ? 1 : 0, ended: value.lifecycle === 'active' || value.lifecycle === 'paused' ? 0 : 1, total: 1 } };
+    }
+    const entries = asArray(value.entries).filter((entry) => entry && typeof entry.workId === 'string' && entry.workId);
+    if (!entries.length) return null;
+    const counts = { active: 0, paused: 0, ended: 0, total: 0 };
+    for (const entry of entries) {
+      const lifecycle = entry.lifecycle === 'active' || entry.lifecycle === 'paused' ? entry.lifecycle : 'ended';
+      counts[lifecycle] += 1;
+      counts.total += 1;
+    }
+    return { entries, counts };
+  };
 
   const renderContent = (content, emptyNote = true) => {
     const statement = String(content?.statement ?? '');
@@ -122,8 +139,14 @@ export function renderDirectory(state, options = {}) {
     const history = `历史已替代 ${historical.filter((claim) => claim.status === 'superseded').length} · 已停止 ${historical.filter((claim) => claim.status === 'retired').length} · 已撤回 ${historical.filter((claim) => claim.status === 'dismissed').length}`;
     const openByTarget = new Map(proposals.filter((proposal) => proposal.status === 'open').map((proposal) => [proposal.targetClaimId, proposal]));
     const lines = node.kind === 'capability' && progressByNode ? progressByNode[node.id] : null;
-    const workEntry = node.kind === 'capability' && workByNode ? workByNode[node.id] : null;
-    const workHtml = workEntry ? `<p class="node-current-work" data-testid="node-current-work"><span class="current-work-badge" data-testid="current-work-badge" data-lifecycle="${esc(workEntry.lifecycle)}" data-work-id="${esc(workEntry.workId)}">本轮在做 · ${esc(({ active: '进行中', paused: '已暂停', ended: '已结束' })[workEntry.lifecycle] ?? workEntry.lifecycle)}</span> <span class="muted">${esc(workEntry.workTitle ?? '')}</span></p>` : '';
+    const workGroup = node.kind === 'capability' ? workGroupFor(node.id) : null;
+    // Every saved work is named here by its workId, with all three counts; the
+    // badge never claims one work is "the" work of this Feature.
+    const workHtml = workGroup ? `<p class="node-current-work" data-testid="node-current-work" data-work-total="${workGroup.counts.total}" data-work-active="${workGroup.counts.active}" data-work-paused="${workGroup.counts.paused}" data-work-ended="${workGroup.counts.ended}" data-work-ids="${esc(workGroup.entries.map((entry) => entry.workId).join(' '))}"><span class="current-work-badge" data-testid="current-work-badge" data-lifecycle="${workGroup.counts.active ? 'active' : workGroup.counts.paused ? 'paused' : 'ended'}" title="${esc(`${workGroup.entries.map((entry) => entry.workTitle || entry.workId).join('、')}（共 ${workGroup.counts.total} 条）`)}">${esc(`${workGroup.counts.active + workGroup.counts.paused ? '工作记录' : '历史工作'} · ${[
+      workGroup.counts.active ? `${workGroup.counts.active} 项进行中` : '',
+      workGroup.counts.paused ? `${workGroup.counts.paused} 项已暂停` : '',
+      workGroup.counts.ended ? `${workGroup.counts.ended} 项已结束` : '',
+    ].filter(Boolean).join('、')}`)}</span>${workGroup.counts.total > 1 ? ` <span class="current-work-ids">${esc(workGroup.entries.map((entry) => entry.workId).join(' · '))}</span>` : ''}</p>` : '';
     const progressHtml = lines ? `<p class="node-progress" data-testid="node-feature-progress" aria-label="${esc(lines.aria)}">${lines.delivery ? `<span class="delivery-badge" data-testid="node-feature-delivery" data-delivery="${esc(lines.delivery.status)}" data-needs-review="${lines.delivery.needsReview ? 'true' : 'false'}" title="${esc(lines.delivery.title)}">${esc(lines.delivery.text)}</span>` : ''}<span>${esc(lines.line1)}</span><span class="node-progress-next">${esc(lines.line2)}</span></p>` : '';
     const notes = asArray(state?.conversationCaptures).flatMap((capture) => asArray(capture.items))
       .filter((item) => item.nodeId === node.id && item.kind === 'note')
@@ -415,7 +438,10 @@ export function initializeReview(bootstrap, helpers) {
   //  * `saved` is only entered after a readback, never after sending a request;
   //  * the client echoes the server's `previewContentDigest` verbatim and never
   //    computes, compares or re-derives a digest of its own;
-  //  * one `operationId` per click intent, reused across retries of that click.
+  //  * one `operationId` per click intent, reused across retries of that click;
+  //  * an async work request belongs to the work view that started it: a late
+  //    response is dropped instead of being attached to another work, and a save
+  //    in flight blocks closing/opening so its `operationId` is never lost.
 
   function clientOperationId() {
     const cryptoApi = typeof crypto !== 'undefined' ? crypto : null;
@@ -428,26 +454,47 @@ export function initializeReview(bootstrap, helpers) {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
 
+  // Every work request captures the view object and a per-view sequence number.
+  // A response is only applied when the same view is still on screen and no newer
+  // request of that view has been started; otherwise it is dropped (a preview of
+  // work A must never be attached to work B, or to a closed panel).
+  function workRequestToken(view) {
+    if (!view) return null;
+    view.requestSeq = (Number(view.requestSeq) || 0) + 1;
+    return { view, seq: view.requestSeq };
+  }
+
+  function workRequestCurrent(token) {
+    return Boolean(token && workView === token.view && Number(workView.requestSeq) === token.seq);
+  }
+
+  // A save (or an independent status read) may be the only copy of its
+  // `operationId`; closing the panel or opening another work would drop it, so
+  // those actions are refused until the outcome is known.
+  function workOutcomePending() {
+    const phase = workView?.phase;
+    return phase === 'saving' || phase === 'status';
+  }
+
+  function refuseWhileSaving() {
+    if (!workOutcomePending()) return false;
+    setStatus('保存结果还没确认：请等这次保存回读或状态读取完成，再关闭或切换工作记录（操作号不能丢）。', { error: true, focus: true });
+    return true;
+  }
+
   function workIndexFor(state) {
     const api = helpers.featureProgressApi;
     if (!api || !state || typeof api.deriveCurrentWorkIndex !== 'function') return null;
     try { return api.deriveCurrentWorkIndex(state, { fingerprints: featureFingerprintsFor(state) }); } catch { return null; }
   }
 
-  // nodeId -> {workId, workTitle, lifecycle} for the card badge. Only the live
-  // state is used: a historical snapshot never shows "what we are doing now".
+  // nodeId -> {nodeId, entries, counts} for the card badge. Only the live state
+  // is used: a historical snapshot never shows "what we are doing now". The
+  // grouping is the same pure helper the first paint uses, so every saved work is
+  // listed by its workId instead of one "best" work being picked.
   function currentWorkByNode(state) {
-    const index = workIndexFor(state);
-    if (!index || !Array.isArray(index.entries)) return null;
-    const rank = { active: 0, paused: 1, ended: 2 };
-    const map = {};
-    for (const entry of index.entries) {
-      if (!entry || typeof entry.nodeId !== 'string') continue;
-      const best = map[entry.nodeId];
-      if (best && (rank[entry.lifecycle] ?? 3) >= (rank[best.lifecycle] ?? 3)) continue;
-      map[entry.nodeId] = { workId: entry.workId, workTitle: entry.workTitle ?? '', lifecycle: entry.lifecycle ?? 'ended' };
-    }
-    return map;
+    if (typeof helpers.nodeWorkIndexByNode !== 'function') return null;
+    return helpers.nodeWorkIndexByNode(workIndexFor(state));
   }
 
   function workProjectionFor(state, workId) {
@@ -489,6 +536,7 @@ export function initializeReview(bootstrap, helpers) {
       currentRecordId: view.currentRecordId,
       revisionCount: view.revisionCount,
       updatedAt: typeof record.createdAt === 'string' ? record.createdAt : '',
+      source: typeof record.source === 'string' ? record.source : null,
     };
   }
 
@@ -531,37 +579,137 @@ export function initializeReview(bootstrap, helpers) {
     return records.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
   }
 
-  function workSection() {
-    const state = current.state;
-    const nodeId = panelTarget?.type === 'node' ? panelTarget.nodeId : null;
-    const index = workIndexFor(state);
-    const container = make('section', { class: 'current-work-panel', 'data-testid': 'current-work-panel-directory' });
-    container.append(make('p', { class: 'eyebrow', text: '本轮在做 · 保存记录（非评审、非交付、非授权）' }));
-    if (!index) {
-      container.append(paragraph('muted', '本页未能派生本轮工作索引；这是读取能力缺口，不表示没有保存过工作。'));
+  function workWriteBlockedReason() {
+    if (!current.writable) return current.readOnlyReason || '当前状态只读';
+    if (writeBlocked) return '保存结果待核对，已停写';
+    return null;
+  }
+
+  function workEntriesForNode(nodeId) {
+    const index = workIndexFor(current.state);
+    if (!index) return { supported: false, entries: [], truncated: false, omitted: 0 };
+    return {
+      supported: true,
+      entries: asArray(index.entries).filter((entry) => entry && entry.nodeId === nodeId),
+      truncated: index.truncated === true,
+      omitted: Number(index.omitted ?? 0),
+    };
+  }
+
+  function newWorkButton(nodeId) {
+    const reason = workWriteBlockedReason();
+    return make('button', {
+      type: 'button', 'data-work-action': 'new', 'data-work-node-id': nodeId, 'data-testid': 'current-work-new',
+      ...(reason ? { disabled: true, 'aria-disabled': 'true', title: reason } : {}),
+    }, '新建工作记录');
+  }
+
+  // Implementation/verification nodes own no work themselves: navigation comes
+  // only from saved edges pointing at this node, and every owning capability is
+  // listed (never one picked by name or recency).
+  function relatedWorkSection(nodeId) {
+    if (typeof helpers.nodeDisplayProjection !== 'function') return null;
+    const node = nodeById(nodeId);
+    if (!node) return null;
+    const projection = helpers.nodeDisplayProjection(node, current.state);
+    if (!projection || !projection.relationKind) return null;
+    const container = make('section', { class: 'current-work-panel', 'data-testid': 'current-work-related-panel' });
+    container.append(make('p', { class: 'eyebrow', text: '关联功能的工作记录' }));
+    const targets = asArray(projection.relatedCapabilities);
+    if (!targets.length) {
+      container.append(paragraph('current-work-empty', `${projection.missingRelatedText || '未记录关联功能。'}这里不新建工作记录。`));
+      if (asArray(projection.otherOwners).length) {
+        container.append(paragraph('current-work-muted', `另有 ${projection.otherOwners.length} 个非产品能力节点引用这份材料；它们不计入功能工作记录。`));
+      }
       return container;
     }
-    const entries = asArray(index.entries).filter((entry) => entry && (!nodeId || entry.nodeId === nodeId));
+    container.append(paragraph('current-work-muted', '归属只按已保存的 implemented_by／verified_by 关系；多个所属功能全部列出，不按名称或时间挑一个。'));
+    const renderEntry = typeof helpers.renderCurrentWorkEntry === 'function' ? helpers.renderCurrentWorkEntry : null;
+    for (const target of targets) {
+      const block = make('div', { class: 'current-work-related', 'data-testid': 'current-work-related-feature', 'data-feature-id': target.id });
+      block.append(make('h4', {}, make('strong', { text: target.label ?? target.id }), make('code', { text: target.id })));
+      const result = workEntriesForNode(target.id);
+      if (!result.supported) {
+        block.append(paragraph('current-work-muted', '本页未能派生工作索引；这是读取能力缺口，不表示没有保存过工作。'));
+      } else {
+        const counts = typeof helpers.nodeWorkCounts === 'function' ? helpers.nodeWorkCounts(result.entries) : { active: 0, paused: 0, ended: 0, total: result.entries.length };
+        // A truncated index cannot prove an empty list: the gap is named instead
+        // of showing the empty state.
+        const coverage = typeof helpers.nodeWorkCoverage === 'function'
+          ? helpers.nodeWorkCoverage(counts, { truncated: result.truncated === true, omitted: result.omitted })
+          : { state: counts.total ? 'saved' : 'empty', text: counts.total ? `已保存 ${counts.total} 条` : '本功能尚无已保存的工作记录' };
+        block.append(paragraph('current-work-muted', coverage.text));
+        if (counts.total && renderEntry) {
+          const list = make('ul', { class: 'current-work-list' });
+          for (const entry of result.entries) list.insertAdjacentHTML('beforeend', renderEntry(entry, { selected: workView?.workId === entry.workId }));
+          block.append(list);
+        }
+      }
+      block.append(make('button', { type: 'button', 'data-work-open-feature': target.id, 'data-testid': 'current-work-open-feature' }, '查看该功能的工作记录'));
+      container.append(block);
+    }
+    return container;
+  }
+
+  function workSection() {
+    const nodeId = panelTarget?.type === 'node' ? panelTarget.nodeId : null;
+    const node = nodeId ? nodeById(nodeId) : null;
+    if (!node) return null;
+    if (node.kind !== 'capability') return relatedWorkSection(nodeId);
+    const index = workIndexFor(current.state);
+    const container = make('section', { class: 'current-work-panel', 'data-testid': 'current-work-panel-directory' });
+    container.append(make('p', { class: 'eyebrow', text: '工作记录 · 保存记录（非评审、非交付、非授权）' }));
+    if (!index) {
+      container.append(paragraph('current-work-muted', '本页未能派生工作索引；这是读取能力缺口，不表示没有保存过工作。'));
+      container.append(newWorkButton(nodeId));
+      return container;
+    }
+    const entries = asArray(index.entries).filter((entry) => entry && entry.nodeId === nodeId);
+    const counts = typeof helpers.nodeWorkCounts === 'function'
+      ? helpers.nodeWorkCounts(entries)
+      : { active: 0, paused: 0, ended: 0, total: entries.length };
+    const emptyText = typeof helpers.nodeWorkEmptyText === 'function' ? helpers.nodeWorkEmptyText() : '本功能尚无已保存的工作记录';
+    const truncated = index.truncated === true;
+    const omitted = Number(index.omitted ?? 0);
+    const listLabel = counts.total && typeof helpers.nodeWorkListLabel === 'function' ? helpers.nodeWorkListLabel(counts) : '工作记录';
+    // A truncated or unreadable index names the gap instead of the empty state.
+    const coverage = typeof helpers.nodeWorkCoverage === 'function'
+      ? helpers.nodeWorkCoverage(counts, { truncated, omitted })
+      : { state: counts.total ? 'saved' : 'empty', text: counts.total ? `已保存 ${counts.total} 条` : emptyText };
+    const head = make('div', { class: 'current-work-panel-head' });
+    const summary = make('div');
+    summary.append(make('h3', { text: listLabel }));
+    summary.append(paragraph('current-work-muted', coverage.text));
+    head.append(summary, newWorkButton(nodeId));
+    container.append(head);
     if (!entries.length) {
-      container.append(paragraph('muted', nodeId
-        ? '这个能力还没有保存过的本轮工作。首页任务不是本轮在做。'
-        : '还没有保存过的本轮工作。'));
+      if (coverage.state === 'empty') container.append(paragraph('current-work-empty', emptyText));
+      container.append(paragraph('current-work-muted', '「新建工作记录」只打开未保存草稿，不会自动开工，也不会写入状态。'));
       return container;
     }
     const renderEntry = typeof helpers.renderCurrentWorkEntry === 'function' ? helpers.renderCurrentWorkEntry : null;
-    if (!renderEntry) {
-      container.append(paragraph('muted', '本页缺少本轮工作渲染器：只显示数量。'));
-      container.append(paragraph('muted', `保存过 ${entries.length} 条本轮工作。`));
-      return container;
+    const running = entries.filter((entry) => entry.lifecycle !== 'ended');
+    const ended = entries.filter((entry) => entry.lifecycle === 'ended');
+    for (const group of [
+      { key: 'running', label: '工作记录', rows: running },
+      { key: 'ended', label: '历史工作', rows: ended },
+    ]) {
+      if (!group.rows.length) continue;
+      if (running.length && ended.length) container.append(make('p', { class: 'current-work-subgroup', text: group.label }));
+      if (!renderEntry) {
+        container.append(paragraph('current-work-muted', `本页缺少工作条目渲染器：该组 ${group.rows.length} 条。`));
+        continue;
+      }
+      const list = make('ul', { class: 'current-work-list' });
+      for (const entry of group.rows) {
+        list.insertAdjacentHTML('beforeend', renderEntry(entry, {
+          selected: workView?.workId === entry.workId && workView?.mode !== 'panel',
+        }));
+      }
+      container.append(list);
     }
-    const list = make('ul', { class: 'current-work-list' });
-    for (const entry of entries) {
-      list.insertAdjacentHTML('beforeend', renderEntry(entry, {
-        selected: workView?.workId === entry.workId && workView?.mode !== 'panel',
-      }));
-    }
-    container.append(list);
-    if (index.truncated) container.append(paragraph('muted', `索引已截断：还有 ${index.omitted} 条未显示。`));
+    if (truncated) container.append(paragraph('current-work-muted', `索引已截断：还有 ${omitted} 条未显示。`));
+    container.append(paragraph('current-work-muted', '工作记录是保存的工作说明：不是评审、交付阶段或执行授权；结束的工作只作为历史读取。'));
     return container;
   }
 
@@ -593,15 +741,24 @@ export function initializeReview(bootstrap, helpers) {
     workPanel.hidden = false;
     const historical = workView.mode === 'history' || historySelection !== null;
     const work = workView.work ?? null;
+    const draft = workView.draft ?? null;
+    // A draft is not a work: it has no id, no record and no saved state.
+    const isDraft = workView.workId === null;
     if (workPanelTitle) {
-      workPanelTitle.textContent = work ? `本轮在做 · ${work.workTitle || '（未命名）'}` : '本轮在做';
+      workPanelTitle.textContent = isDraft
+        ? `新建工作记录${work?.featureLabel ? ` · ${work.featureLabel}` : ''}（未保存草稿）`
+        : work ? `工作记录 · ${work.workTitle || '（未命名）'}` : '工作记录';
     }
     const parts = [];
-    parts.push(`<div class="current-work-actions"><button type="button" data-work-action="back" data-testid="current-work-back">回到现在</button></div>`);
+    parts.push(`<div class="current-work-actions"><button type="button" data-work-action="back" data-testid="current-work-back">${isDraft ? '取消草稿' : '回到工作概览'}</button></div>`);
     if (!work) {
-      parts.push('<p class="current-work-muted" data-readonly="true">当前状态里没有这条本轮工作（可能已被更高版本替换，或从未保存）。</p>');
+      parts.push('<p class="current-work-muted" data-readonly="true">当前状态里没有这条工作记录（可能已被更高版本替换，或从未保存）。这里不推测它的内容，也不写入任何东西。</p>');
     } else if (workView.mode === 'editor') {
-      parts.push(helpers.renderCurrentWorkEditor(work, { operation: workView.operation, phase: workView.phase }));
+      parts.push(helpers.renderCurrentWorkEditor(work, {
+        operation: workView.operation ?? (isDraft ? 'open' : 'adjust'),
+        phase: workView.phase,
+        draft,
+      }));
       if (workView.preview) parts.push(helpers.renderCurrentWorkPreview(workView.preview));
     } else if (workView.mode === 'history' || workHistoryOpen) {
       parts.push(helpers.renderCurrentWorkHistory({ historyRecords: workView.records ?? [] }));
@@ -633,6 +790,7 @@ export function initializeReview(bootstrap, helpers) {
 
   function openWorkUri(workId, mode = 'detail', options = {}) {
     if (historySelection) return;
+    if (refuseWhileSaving()) return;
     versionDiffApi?.close();
     if (currentRoadmapSelection || roadmapIndexOpen) closeRoadmapPanel({ focus: false });
     const work = workProjectionFor(current.state, workId);
@@ -641,14 +799,77 @@ export function initializeReview(bootstrap, helpers) {
       workId, mode, phase: 'idle', preview: null, operation: null,
       work, records: workHistoryRecords(current.state, workId),
       trigger: options.trigger ?? null, message: null,
+      // A draft holds only what the human typed; it is dropped whenever another
+      // work is opened here, so a half-typed note can never land in the wrong work.
+      draft: options.draft ?? null,
     };
     renderWorkPanel();
     if (options.url !== false) setWorkQuery(workId);
     if (options.focus !== false) workPanelTitle?.focus({ preventScroll: true });
   }
 
+  // A new work is opened as an unsaved draft: no URL, no write, no automatic
+  // start. Nothing exists until a preview is generated, saved and read back.
+  function openNewWorkDraft(nodeId, options = {}) {
+    const node = nodeById(nodeId);
+    if (!node || node.kind !== 'capability') return;
+    if (refuseWhileSaving()) return;
+    versionDiffApi?.close();
+    if (currentRoadmapSelection || roadmapIndexOpen) closeRoadmapPanel({ focus: false });
+    workHistoryOpen = false;
+    // Nothing about the previous work of this Feature is copied into a new
+    // draft: no upper layer, no selection, no resume. Those are re-resolved by
+    // the server from the current state, and a gap stays a visible gap instead of
+    // being filled from the most recent record.
+    workView = {
+      workId: null,
+      mode: 'editor',
+      operation: 'open',
+      phase: 'idle',
+      preview: null,
+      message: null,
+      records: [],
+      draft: { workTitle: '', objective: '', scope: [], exclusions: [], acceptanceCriteria: [], sourceRefs: [], stopPoint: '', nextStep: '', responsibility: 'agent', authorizationRequired: [], selectionKind: '', selectionSourceRefs: [] },
+      trigger: options.trigger ?? null,
+      work: {
+        workId: null,
+        nodeId,
+        featureLabel: typeof node.label === 'string' ? node.label : '',
+        workTitle: '',
+        lifecycle: { status: 'active', endedReason: null, endedNote: null },
+        objective: null,
+        scope: [],
+        exclusions: [],
+        acceptanceCriteria: [],
+        selection: null,
+        upper: null,
+        upperResolved: null,
+        resume: null,
+        sourceRefs: [],
+        contextStatus: 'unknown',
+        contentComparable: false,
+        supportContentComparable: false,
+        supportDigestSource: null,
+        supportDigestMissing: [],
+        changes: [],
+        changesTruncated: false,
+        adopted: [],
+        currentRecordId: null,
+        revisionCount: 0,
+        updatedAt: '',
+        source: null,
+      },
+    };
+    renderWorkPanel();
+    workPanelBody?.querySelector('form[data-form="current-work"] [data-field="workTitle"]')?.focus({ preventScroll: true });
+    setStatus('已打开未保存的工作草稿：还没有写入状态，也不会自动开工。', { focus: false });
+  }
+
   function closeWorkPanel(options = {}) {
     if (!workView) return;
+    // While a save or its independent status read is in flight, the view holds
+    // the only copy of the operationId: closing it would lose the write receipt.
+    if (options.force !== true && refuseWhileSaving()) return;
     const trigger = workView.trigger;
     const workId = workView.workId;
     workView = null;
@@ -703,14 +924,15 @@ export function initializeReview(bootstrap, helpers) {
   function buildWorkContent(operation) {
     const work = workView.work;
     const form = readWorkForm();
-    if (!form) throw new Error('表单不存在，请重新打开编辑本轮工作。');
+    if (!form) throw new Error('表单不存在，请重新打开编辑工作记录。');
     const businessReadOnly = operation === 'pause' || operation === 'resume' || operation === 'end';
+    const isOpen = work.workId === null || work.workId === undefined;
     const base = {
       version: 1,
       nodeId: work.nodeId,
       operation,
-      workId: work.workId,
-      predecessorRecordId: work.currentRecordId ?? null,
+      workId: work.workId ?? null,
+      predecessorRecordId: isOpen ? null : (work.currentRecordId ?? null),
     };
     const saved = {
       workTitle: work.workTitle ?? '',
@@ -723,11 +945,30 @@ export function initializeReview(bootstrap, helpers) {
       sourceRefs: asArray(work.sourceRefs),
     };
     const used = businessReadOnly ? saved : form;
-    const resume = used.resume ?? {
-      stopPoint: used.stopPoint, nextStep: used.nextStep || null,
-      responsibility: used.responsibility, authorizationRequired: used.authorizationRequired,
-    };
-    const selection = saved.selection ?? { kind: 'agent_proposed_unselected', sourceRefs: [] };
+    // Pause/resume/end repeat the saved business snapshot; when the record has
+    // no resume block, that is repeated as null rather than invented.
+    const resume = businessReadOnly
+      ? (saved.resume ?? null)
+      : {
+        stopPoint: used.stopPoint, nextStep: used.nextStep || null,
+        responsibility: used.responsibility, authorizationRequired: used.authorizationRequired,
+      };
+    if (!businessReadOnly) {
+      // The fields the server will reject are named here, so a human sees which
+      // one to fill instead of a generic refusal.
+      const missing = [];
+      if (!used.workTitle) missing.push('请填写标题。');
+      if (!resume.stopPoint) missing.push('请填写本轮停点。');
+      if (!asArray(resume.authorizationRequired).length) missing.push('请至少选择一项「所需授权」（不需要额外授权时选「无需额外授权」）。');
+      if (missing.length) throw new Error(missing.join(' '));
+    }
+    // The working scope is a human choice, so it comes from the form: an empty
+    // select stays "agent proposed, unselected" and only an actual selection in
+    // the form is recorded as one (§9). Nothing here upgrades a prefill.
+    const draftSelection = form.selectionKind && form.selectionKind !== 'agent_proposed_unselected'
+      ? { kind: form.selectionKind, sourceRefs: asArray(form.selectionSourceRefs) }
+      : { kind: 'agent_proposed_unselected', sourceRefs: [] };
+    const selection = businessReadOnly ? (saved.selection ?? draftSelection) : draftSelection;
     const lifecycle = { endedReason: null, endedNote: null };
     if (operation === 'end') {
       lifecycle.endedReason = form.endedReason || 'other';
@@ -736,7 +977,7 @@ export function initializeReview(bootstrap, helpers) {
     return {
       ...base,
       workTitle: used.workTitle,
-      objective: used.objective,
+      objective: used.objective || null,
       scope: used.scope.map((statement) => ({ statement })),
       exclusions: used.exclusions.map((statement) => ({ statement })),
       acceptanceCriteria: used.acceptanceCriteria.map((statement) => ({ statement })),
@@ -750,7 +991,11 @@ export function initializeReview(bootstrap, helpers) {
       },
       lifecycle,
       resume,
-      source: 'live_review',
+      // Only the two sources the server accepts (§5); the UI never reports a
+      // user selection that was not made in the form.
+      source: work.source === 'agent_organized' || work.source === 'user_note'
+        ? work.source
+        : (asArray(used.sourceRefs).length ? 'user_note' : 'agent_organized'),
       sourceRefs: used.sourceRefs ?? saved.sourceRefs,
       basisRefs: [],
       adoptedBasis: asArray(work.adopted).map((entry) => ({ claimId: entry.claimId, writeSnapshot: true })),
@@ -759,9 +1004,70 @@ export function initializeReview(bootstrap, helpers) {
 
   function setWorkPhase(phase, message) {
     if (!workView) return;
+    // A re-render would drop what the human typed, so the draft is read back from
+    // the live form before the panel is rebuilt.
+    captureWorkDraft();
     workView.phase = phase;
     if (message !== undefined) workView.message = message;
     renderWorkPanel();
+  }
+
+  // Reads the editor form into `workView.draft` (never into state). Inputs that
+  // are not in the form (business fields while pausing/ending) keep their draft
+  // value. Returns the typed values so a re-render can put the caret back.
+  function captureWorkDraft() {
+    if (!workView) return null;
+    const form = workPanelBody?.querySelector('form[data-form="current-work"]');
+    if (!form) return null;
+    const typed = readWorkForm();
+    if (!typed) return null;
+    workView.draft = {
+      workTitle: typed.workTitle,
+      objective: typed.objective,
+      scope: typed.scope,
+      exclusions: typed.exclusions,
+      acceptanceCriteria: typed.acceptanceCriteria,
+      sourceRefs: typed.sourceRefs,
+      stopPoint: typed.stopPoint,
+      nextStep: typed.nextStep,
+      responsibility: typed.responsibility,
+      authorizationRequired: typed.authorizationRequired,
+      selectionKind: typed.selectionKind ?? '',
+      selectionSourceRefs: typed.selectionSourceRefs,
+      // The end reason is typed in the same form: without it a re-render would
+      // show the saved reason while the submit used the typed one.
+      endedReason: typed.endedReason ?? 'scope_completed',
+      endedNote: typed.endedNote ?? '',
+    };
+    return typed;
+  }
+
+  // Any edit invalidates a preview that was made from the previous values: a
+  // stale preview must never be saved as if it described what is on screen.
+  function invalidateWorkPreview(reason) {
+    if (!workView || !workView.preview) return;
+    workView.preview = null;
+    workView.operationId = null;
+    if (workView.phase === 'previewReady' || workView.phase === 'saving') workView.phase = 'idle';
+    workView.message = reason;
+    renderWorkPanel();
+    restoreWorkFocus();
+  }
+
+  function restoreWorkFocus() {
+    const form = workPanelBody?.querySelector('form[data-form="current-work"]');
+    if (!form) return;
+    const key = workView?.focusKey ?? 'workTitle';
+    const target = form.querySelector(`[data-field="${cssEscape(key)}"]`)
+      || form.querySelector('button[data-work-action="preview"]');
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    // A re-render replaces the input element, so the caret and the selection are
+    // put back explicitly instead of only re-focusing the field.
+    const range = workView?.focusRange ?? null;
+    if (range && typeof target.setSelectionRange === 'function') {
+      try { target.setSelectionRange(range.start, range.end, range.direction ?? 'none'); } catch { /* number inputs have no selection */ }
+    }
   }
 
   function openWorkDetail(workId, options = {}) {
@@ -781,6 +1087,7 @@ export function initializeReview(bootstrap, helpers) {
 
   async function previewWorkSave() {
     if (!workView || workView.phase === 'previewing' || workView.phase === 'saving') return;
+    const view = workView;
     let content;
     try { content = buildWorkContent(workView.operation ?? 'adjust'); } catch (error) {
       setWorkPhase('failed', `无法收集表单：${error.message}`);
@@ -790,6 +1097,7 @@ export function initializeReview(bootstrap, helpers) {
       setWorkPhase('failed', '当前只读或已停写，不能生成预览。');
       return;
     }
+    const token = workRequestToken(view);
     setWorkPhase('previewing');
     try {
       const data = await postJson('/api/current-work/preview', {
@@ -798,10 +1106,13 @@ export function initializeReview(bootstrap, helpers) {
         expectedDigest: current.fileDigest,
         content,
       });
+      // The panel may have been closed, or another work opened, while the
+      // request was in flight: a preview of work A is never attached to B.
+      if (!workRequestCurrent(token)) return;
       const preview = data.preview ?? data;
-      workView.preview = {
-        operation: preview.operation ?? workView.operation ?? 'adjust',
-        workId: preview.workId ?? workView.workId,
+      view.preview = {
+        operation: preview.operation ?? view.operation ?? 'adjust',
+        workId: preview.workId ?? view.workId,
         previewId: preview.previewId ?? null,
         previewContentDigest: preview.previewContentDigest ?? null,
         expiresAt: preview.expiresAt ?? null,
@@ -809,9 +1120,10 @@ export function initializeReview(bootstrap, helpers) {
         sidecarPlan: preview.sidecarPlan ?? [],
         notes: preview.notes ?? [],
       };
-      workView.operationId = workView.operationId ?? null;
+      view.operationId = view.operationId ?? null;
       setWorkPhase('previewReady', null);
     } catch (error) {
+      if (!workRequestCurrent(token)) return;
       setWorkPhase('failed', `预览失败：${error.message}`);
       handleError(error, { quiet: true });
     }
@@ -820,14 +1132,16 @@ export function initializeReview(bootstrap, helpers) {
   async function saveWork() {
     if (!workView || !workView.preview) return;
     if (workView.phase === 'saving') return;
-    const preview = workView.preview;
+    const view = workView;
+    const preview = view.preview;
     if (!preview.previewId || !preview.previewContentDigest) {
       setWorkPhase('failed', '预览句柄或预览摘要缺失：请重新生成预览。');
       return;
     }
     // One operationId per click intent: the same save (including a retry after an
     // unknown outcome) reuses it so the server can answer with the same receipt.
-    workView.operationId = workView.operationId ?? clientOperationId();
+    view.operationId = view.operationId ?? clientOperationId();
+    const token = workRequestToken(view);
     setWorkPhase('saving');
     let data = null;
     try {
@@ -835,13 +1149,16 @@ export function initializeReview(bootstrap, helpers) {
         projectId,
         previewId: preview.previewId,
         previewContentDigest: preview.previewContentDigest,
-        operationId: workView.operationId,
+        operationId: view.operationId,
         authorizationRef: 'live_review_human',
         expectedStateVersion: current.stateVersion,
         expectedDigest: current.fileDigest,
       });
     } catch (error) {
+      if (!workRequestCurrent(token)) return;
       const code = error.code || '';
+      // These refusals are certain: the server says the preview or the state no
+      // longer matches, so nothing was written.
       if (code === 'state_conflict' || code === 'preview_expired' || code === 'preview_consumed' || code === 'preview_mismatch') {
         setWorkPhase('conflict', `保存未写入：${error.message}（草稿与预览已失效，请刷新后重新预览）`);
         return;
@@ -852,9 +1169,13 @@ export function initializeReview(bootstrap, helpers) {
         await readWorkStatus();
         return;
       }
-      setWorkPhase('failed', `保存失败：${error.message}（草稿仍保留）`);
+      // A network error without a response body (or a 5xx) does not prove the
+      // commit was skipped: the status route is read before saying anything.
+      setWorkPhase('unknown', `保存请求没有拿到可核对的结果：${error.message}（不宣称已保存，正在独立读取状态）`);
+      await readWorkStatus();
       return;
     }
+    if (!workRequestCurrent(token)) return;
     if (!data || data.ok !== true || data.commitStatus !== 'committed' || !data.receiptId) {
       setWorkPhase('unknown', '保存响应没有给出可核对的回执：不宣称已保存，正在独立读取状态。');
       await readWorkStatus();
@@ -888,6 +1209,12 @@ export function initializeReview(bootstrap, helpers) {
     }
     workView.operationId = null;
     workView.preview = null;
+    // An open mints its workId server-side; the receipt is the first place the
+    // page learns it, so the saved work is adopted instead of guessing one.
+    if (!workView.workId && typeof data.workId === 'string' && data.workId) {
+      workView.workId = data.workId;
+    }
+    workView.draft = null;
     // A commit is only reported once the receipt and the readback agree it was
     // written; a contradictory readback is not silently upgraded to "saved".
     setWorkPhase('saved', verified
@@ -897,7 +1224,12 @@ export function initializeReview(bootstrap, helpers) {
   }
 
   async function afterWorkWrite() {
-    const message = workView?.phase === 'saved' ? (workView.message || '本轮工作已保存并回读。') : null;
+    const message = workView?.phase === 'saved' ? (workView.message || '工作记录已保存并回读。') : null;
+    // The view this save belongs to, captured before any await. The state re-read
+    // below is this save's own read-back; when the panel has meanwhile closed, or
+    // another work's draft (with no workId yet) took its place, that read-back
+    // must not touch it.
+    const savedView = workView;
     // The saved record is this work's new revision. Stay on the work panel and
     // re-read it, so "历次修订" and the saved state are reachable without a reload;
     // the announcement goes to the existing review status region below.
@@ -908,43 +1240,82 @@ export function initializeReview(bootstrap, helpers) {
       workView.operation = null;
       workView.operationId = null;
       workView.message = null;
+      workView.draft = null;
       workView.records = workHistoryRecords(current.state, workView.workId);
       workView.work = workProjectionFor(current.state, workView.workId);
       renderWorkPanel();
     }
-    setWorkQuery(null);
+    // The URL follows what is on screen: a draft only becomes linkable once it
+    // has a saved workId.
+    setWorkQuery(workView?.workId ?? null);
     renderDirectoryHosts();
     // The result is announced in the existing status region: a save is never a
     // silent change.
     setStatus(`${message ? `${message} ` : ''}评审草稿与目标未改动。`, { focus: true });
     const shown = Boolean(workView);
-    await refreshState({ quiet: true });
-    if (shown && workView) {
+    // A work save changes the state version, so the page re-reads it — but the
+    // review panel is NOT rebuilt: that would replace the review form element and
+    // throw away the review draft the human is writing while checking work. The
+    // work panel is not repainted either: this view already shows the saved
+    // record, and a later view (a draft opened while this read was in flight)
+    // must keep its own form element, focus and caret. Only the work block inside
+    // an open node panel is refreshed in place.
+    await refreshState({ quiet: true, restore: false, workPanel: false });
+    // Only the same view is updated, and only when it is still the one on screen:
+    // attaching this read-back to a later view (a draft whose workId is still
+    // null, so its work projection is empty) would blank that draft's editor.
+    if (shown && workView && workView === savedView) {
       workView.records = workHistoryRecords(current.state, workView.workId);
       workView.work = workProjectionFor(current.state, workView.workId);
       renderWorkPanel();
     }
+    refreshNodeWorkSection();
+  }
+
+  // Updates only the work block inside an open node panel (it lists this
+  // Feature's saved works), so the panel's review form, its values and its URL
+  // stay exactly as they were.
+  function refreshNodeWorkSection() {
+    if (panelTarget?.type !== 'node') return;
+    const existing = panelBody.querySelector('[data-testid="current-work-panel-directory"], [data-testid="current-work-related-panel"]');
+    if (!existing) return;
+    const next = workSection();
+    if (next) existing.replaceWith(next);
+    else existing.remove();
   }
 
   async function readWorkStatus() {
     if (!workView) return;
-    const workId = workView.workId;
+    const view = workView;
+    const workId = view.workId;
+    const operationId = view.operationId ?? null;
+    // A draft has no workId yet, so its own operationId is the only lookup: the
+    // status route accepts one of them and never guesses the other.
+    if (!workId && !operationId) {
+      setWorkPhase('unknown', '这条草稿还没有 workId，也没有操作号：无法核对写入路径，请重新生成预览后再保存。');
+      return;
+    }
+    const token = workRequestToken(view);
     setWorkPhase('status', '保存结果未知：正在独立读取状态（不重复写入）。');
     try {
-      const operationId = workView.operationId ?? null;
-      const statusQuery = `workId=${encodeURIComponent(workId)}${operationId ? `&operationId=${encodeURIComponent(operationId)}` : ''}`;
-      const response = await fetch(`/api/current-work/status?${statusQuery}`, {
+      const params = new URLSearchParams();
+      if (workId) params.set('workId', workId);
+      if (operationId) params.set('operationId', operationId);
+      const response = await fetch(`/api/current-work/status?${params.toString()}`, {
         credentials: 'same-origin', headers: { Accept: 'application/json' },
       });
       let body = null;
       try { body = await response.json(); } catch { body = null; }
+      if (!workRequestCurrent(token)) return;
       if (!response.ok || body?.ok === false) throw new Error(body?.error?.message || `读取状态失败（HTTP ${response.status}）`);
       // §11.3: `found` is the receipt lookup for this operation, never a guess.
       if (body?.found === true && body.integrity !== 'broken') {
         const receiptId = body.receiptId ?? null;
         const recordId = body.recordId ?? null;
-        workView.operationId = null;
-        workView.preview = null;
+        view.operationId = null;
+        view.preview = null;
+        view.draft = null;
+        if (!view.workId && typeof body.workId === 'string' && body.workId) view.workId = body.workId;
         setWorkPhase('saved', `状态读取确认写入已提交（记录 ${recordId ?? '未记录'}${receiptId ? `，回执 ${receiptId}` : ''}）。`);
         await afterWorkWrite();
         return;
@@ -955,12 +1326,15 @@ export function initializeReview(bootstrap, helpers) {
       }
       setWorkPhase('notCommitted', '状态读取没有找到这次操作的记录：本次没有写入。可以重新生成预览后再保存。');
     } catch (error) {
+      if (!workRequestCurrent(token)) return;
       setWorkPhase('unknown', `无法读取保存状态：${error.message}。请刷新页面并用项目状态核对；不要重复提交。`);
     }
   }
 
   function openWorkHistory(workId) {
+    if (refuseWhileSaving()) return;
     if (!workView || workView.workId !== workId) openWorkUri(workId, 'history');
+    if (!workView) return;
     workHistoryOpen = true;
     workView.mode = 'history';
     workView.records = workHistoryRecords(current.state, workId);
@@ -974,6 +1348,14 @@ export function initializeReview(bootstrap, helpers) {
 
   function backToNow() {
     if (!workView) return;
+    if (refuseWhileSaving()) return;
+    // Leaving an unsaved draft closes it: nothing was written, so there is
+    // nothing to go back to. The typed values do not become a work record.
+    if (workView.workId === null) {
+      closeWorkPanel();
+      setStatus('已取消未保存的工作草稿；没有写入任何东西。', { focus: false });
+      return;
+    }
     workHistoryOpen = false;
     workView.mode = 'detail';
     workView.phase = 'idle';
@@ -991,11 +1373,12 @@ export function initializeReview(bootstrap, helpers) {
   function filterRelatedWork(nodeId) {
     if (!nodeId) { exitWorkFilter(); return; }
     workFilterNodeId = nodeId;
-    const workEntry = currentWorkByNode(current.state)?.[nodeId] ?? null;
     suppressGraphHook = true;
     try { graphApi?.selectNode(nodeId, true); } finally { suppressGraphHook = false; }
-    if (workEntry) openWorkDetail(workEntry.workId, { focus: false });
-    setStatus('只看与本轮工作相关的能力；退出筛选回到原来的视图。', { focus: false });
+    // Navigate to the Feature only: its work directory lists every saved work by
+    // workId, so nothing here picks one entry on the user's behalf.
+    openNode(nodeId, { focus: false });
+    setStatus('只看与已保存工作记录相关的能力；工作面板按 workId 列出全部记录，退出筛选回到原来的视图。', { focus: false });
   }
 
   function exitWorkFilter(focus = true) {
@@ -1683,6 +2066,30 @@ export function initializeReview(bootstrap, helpers) {
   panelBody.addEventListener('input', onFormActivity);
   panelBody.addEventListener('change', onFormActivity);
 
+  // The work editor keeps its own draft: no `formRevision`, no review draft, no
+  // state. Typing only refreshes the in-memory draft, and any edit drops a
+  // preview that no longer describes the form.
+  function onWorkFormActivity(event) {
+    if (!workView || workView.mode !== 'editor') return;
+    const control = event.target?.closest?.('[data-field]');
+    if (!control) return;
+    const fieldName = control.getAttribute('data-field');
+    if (fieldName) workView.focusKey = fieldName;
+    // Keep the caret where the human left it: a re-render (phase change, preview
+    // invalidation) recreates the field, so the position is remembered here.
+    if (typeof control.selectionStart === 'number' && typeof control.selectionEnd === 'number') {
+      workView.focusRange = {
+        start: control.selectionStart,
+        end: control.selectionEnd,
+        direction: typeof control.selectionDirection === 'string' ? control.selectionDirection : 'none',
+      };
+    }
+    captureWorkDraft();
+    if (workView.preview) invalidateWorkPreview('内容已修改：预览已失效，请重新生成预览后再保存。');
+  }
+  workPanel?.addEventListener('input', onWorkFormActivity);
+  workPanel?.addEventListener('change', onWorkFormActivity);
+
   function field(labelText, control, hint) {
     panelSeq += 1;
     const id = control.id || `review-field-${panelSeq}`;
@@ -2178,11 +2585,20 @@ export function initializeReview(bootstrap, helpers) {
     panelTitle.textContent = node.label ?? node.id;
     panelBody.replaceChildren();
     const wrapper = make('article', { class: 'panel-node', 'data-testid': 'node-panel' });
-    wrapper.append(make('p', { class: 'eyebrow', text: labels.kind[node.kind] ?? node.kind }));
-    if (node.description) wrapper.append(paragraph('', node.description));
+    // One shared projection decides what this node's own text means: a quoted
+    // 用途说明 under a type label, never a confirmed product requirement, and for
+    // evidence nodes also the saved owners of this material.
+    const display = typeof helpers.nodeDisplayProjection === 'function' ? helpers.nodeDisplayProjection(node, current.state) : null;
+    wrapper.append(make('p', { class: 'eyebrow', text: display?.kindLabel ?? labels.kind[node.kind] ?? node.kind }));
+    if (display && typeof helpers.nodeDisplayHtml === 'function') {
+      const displayHost = make('div', { class: 'node-display-host' });
+      displayHost.innerHTML = helpers.nodeDisplayHtml(display);
+      wrapper.append(displayHost);
+    } else if (node.description) wrapper.append(paragraph('', node.description));
     const featureProgress = featureProgressElement(current.state, nodeId, { historical: false });
     if (featureProgress) wrapper.append(featureProgress);
-    wrapper.append(workSection());
+    const work = workSection();
+    if (work) wrapper.append(work);
     wrapper.append(make('p', { class: 'muted', text: '先查看本节点的意图列表与确认比例，再打开单条面板。' }));
     const host = make('div', { class: 'panel-directory' });
     host.innerHTML = helpers.renderDirectory(current.state, {
@@ -2751,7 +3167,7 @@ export function initializeReview(bootstrap, helpers) {
     return true;
   }
 
-  function renderDirectoryHosts() {
+  function renderDirectoryHosts(options = {}) {
     if (directoryHost) {
       directoryHost.innerHTML = helpers.renderDirectory(current.state, {
         writable: current.writable && !writeBlocked,
@@ -2763,7 +3179,13 @@ export function initializeReview(bootstrap, helpers) {
     if (deferHost) deferHost.innerHTML = helpers.renderDeferQueue(current.state);
     renderRoadmapHosts();
     renderCurrentRoadmapPanel();
-    renderWorkPanel();
+    // A directory repaint does not have to repaint the work panel: a state re-read
+    // may land while the human is typing in a draft, and rebuilding that panel
+    // would throw away its form element, focus and caret. Only the saved works of
+    // a Feature change, so the "related work" block inside an open node panel is
+    // refreshed in place instead of the whole editor.
+    if (options.workPanel !== false) renderWorkPanel();
+    else refreshNodeWorkSection();
   }
 
   function updateGraph() {
@@ -2785,7 +3207,7 @@ export function initializeReview(bootstrap, helpers) {
     return body;
   }
 
-  function applyServerState(body) {
+  function applyServerState(body, options = {}) {
     const nextVersion = body.currentStateVersion ?? body.state?.stateVersion ?? current.stateVersion;
     const nextDigest = body.currentDigest || body.fileDigest || current.fileDigest;
     const changed = nextVersion !== current.stateVersion || (nextDigest && current.fileDigest && nextDigest !== current.fileDigest);
@@ -2803,7 +3225,7 @@ export function initializeReview(bootstrap, helpers) {
     stateLocation = body.stateLocation || stateLocation;
     if (changed && previewState) invalidatePreview('状态版本/摘要已变化，预览与勾选已失效；请重新生成预览。');
     updateHeader();
-    renderDirectoryHosts();
+    renderDirectoryHosts({ workPanel: options.workPanel !== false });
     updateGraph();
     timelineApi?.update(current.state, current.timelineHistory);
     graphTimeApi?.update(current.state, current.timelineHistory);
@@ -2811,13 +3233,13 @@ export function initializeReview(bootstrap, helpers) {
     return changed;
   }
 
-  async function fetchState() {
-    return applyServerState(await readServerState());
+  async function fetchState(options = {}) {
+    return applyServerState(await readServerState(), options);
   }
 
   async function refreshState(options = {}) {
     try {
-      const changed = await fetchState();
+      const changed = await fetchState({ workPanel: options.workPanel });
       if (options.restore !== false && panelTarget && (changed || options.forceRestore)) restorePanel();
       if (options.route) routeFromUrl({ focus: options.focus !== false });
       return changed;
@@ -3257,7 +3679,24 @@ export function initializeReview(bootstrap, helpers) {
         openWorkEditor(workId, workActionButton.dataset.workOperation ?? 'adjust', { trigger: workActionButton });
         return;
       }
+      if (action === 'new') {
+        if (!current.writable || writeBlocked) { setStatus('当前只读或已停写，不能新建工作记录。', { error: true, focus: true }); return; }
+        const nodeId = workActionButton.dataset.workNodeId
+          ?? (panelTarget?.type === 'node' ? panelTarget.nodeId : null);
+        openNewWorkDraft(nodeId, { trigger: workActionButton });
+        return;
+      }
       if (action === 'status') { void readWorkStatus(); return; }
+      return;
+    }
+    // A related capability is reached by its saved edge only; this navigates to
+    // that Feature, it does not start or resume any work.
+    const openFeatureButton = event.target.closest('[data-work-open-feature]');
+    if (openFeatureButton) {
+      event.preventDefault();
+      const nodeId = openFeatureButton.dataset.workOpenFeature;
+      if (graphApi?.selectNode) graphApi.selectNode(nodeId, true);
+      else openNode(nodeId, { trigger: openFeatureButton });
       return;
     }
     const workFocusButton = event.target.closest('[data-work-focus-node]');

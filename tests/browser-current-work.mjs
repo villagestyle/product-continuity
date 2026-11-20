@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Acceptance for 本轮在做 (references/current-work-contract.md §13).
+// Acceptance for 工作记录 (references/current-work-contract.md §13 and the
+// batch-1 layering rules in references/current-work-clarity-batch1.md).
 //
 // Two modes, because the browser part cannot run everywhere:
 //
@@ -16,7 +17,7 @@
 //
 // The scenario asserts, in order: card badge → panel entry → detail reading order
 // and separate chips → review DOM/URL untouched → editor → preview → save →
-// history (read-only) → related-work filter.
+// history (read-only) → a new unsaved draft that writes nothing.
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -26,9 +27,11 @@ import { renderReview } from '../scripts/render-review.mjs';
 import { deriveCurrentWorkIndex, currentWork } from '../scripts/feature-progress.mjs';
 
 const WORK_ID = 'work:browser-synthetic';
-const WORK_TITLE = '浏览器合成的本轮工作';
+const WORK_TITLE = '浏览器合成的工作记录';
+const ENDED_WORK_ID = 'work:browser-synthetic-ended';
 const NODE_ID = 'capability:product-details';
 const RECORD_ID = 'checkpoint:00000000-0000-4000-8000-000000000901';
+const ENDED_RECORD_ID = 'checkpoint:00000000-0000-4000-8000-000000000902';
 const DIGEST = (hex) => 'sha256:' + hex.repeat(64);
 
 // ---------------------------------------------------------------------------
@@ -55,7 +58,7 @@ async function syntheticState() {
       workId: WORK_ID,
       workTitle: WORK_TITLE,
       operation: 'open',
-      objective: '验证本轮在做面板（合成）',
+      objective: '验证工作记录面板（合成）',
       scope: [{ statement: '列出面板' }],
       exclusions: [{ statement: '不做真实写入' }],
       acceptanceCriteria: [{ statement: '关键区块都有 testid' }],
@@ -67,6 +70,35 @@ async function syntheticState() {
       },
       lifecycle: { status: 'active', endedReason: null, endedNote: null },
       resume: { stopPoint: '合成停点', nextStep: '下一步', responsibility: 'agent', authorizationRequired: ['none'] },
+    },
+    adoptedBasis: [],
+    sourceRefs: [],
+  }, {
+    // A second, already-ended work of the SAME Feature: the card counts both and
+    // the panel lists both by workId, so no single work is picked as "the" one.
+    id: ENDED_RECORD_ID,
+    nodeId: NODE_ID,
+    createdAt: '2026-11-17T09:00:00.000Z',
+    basis: {
+      observedStateVersion: 10,
+      observedDigest: DIGEST('b'),
+      contextFingerprintVersion: 1,
+      contextFingerprint: DIGEST('c'),
+      contextIds: { nodeIds: [], edgeIds: [], evidenceIds: [], claimIds: [], decisionIds: [], proposalIds: [], reviewIds: [], roadmapItemIds: [] },
+    },
+    workContext: {
+      version: 1,
+      workId: ENDED_WORK_ID,
+      workTitle: '浏览器合成的历史工作',
+      operation: 'open',
+      objective: '一条已经结束的工作（合成）',
+      scope: [{ statement: '列出面板' }],
+      exclusions: [{ statement: '不做真实写入' }],
+      acceptanceCriteria: [{ statement: '历史只读' }],
+      selection: { kind: 'agent_proposed_unselected', sourceRefs: ['synthetic fixture'] },
+      upper: { productGoal: { state: 'gap', reason: 'no_relation' }, stage: null, openUserPaths: [] },
+      lifecycle: { status: 'ended', endedReason: 'handoff', endedNote: '合成结束说明' },
+      resume: { stopPoint: '已结束', nextStep: '下一步', responsibility: 'agent', authorizationRequired: ['none'] },
     },
     adoptedBasis: [],
     sourceRefs: [],
@@ -83,9 +115,10 @@ const sha = (bytes) => 'sha256:' + createHash('sha256').update(bytes).digest('he
 async function preflight() {
   const state = await syntheticState();
   const index = deriveCurrentWorkIndex(state);
-  assert.equal(index.entries.length, 1, 'the synthetic state has exactly one saved work');
-  assert.equal(index.entries[0].workId, WORK_ID);
+  assert.equal(index.entries.length, 2, 'the synthetic state has two saved works of one Feature');
+  assert.deepEqual(index.entries.map((entry) => entry.workId).sort(), [ENDED_WORK_ID, WORK_ID].sort());
   assert.equal(currentWork(state, WORK_ID).found, true);
+  assert.equal(currentWork(state, ENDED_WORK_ID).found, true);
 
   const nonce = 'test-nonce-browser-work';
   const html = renderReview(
@@ -97,6 +130,12 @@ async function preflight() {
     assert.ok(html.includes(`id="${id}"`), `page shell has #${id}`);
   }
   assert.ok(html.includes('data-testid="current-work-panel"'), 'panel carries its testid');
+
+  // The first paint already aggregates every saved work: both ids and both
+  // counts, before any refresh.
+  assert.match(html, /data-work-total="2"/);
+  assert.match(html, new RegExp(`data-work-ids="${WORK_ID} ${ENDED_WORK_ID}"`));
+  assert.match(html, /工作记录 · 1 项进行中、1 项已结束/);
 
   const scripts = [...html.matchAll(/<script\b/g)];
   assert.equal(scripts.length, 1, 'still exactly one page script');
@@ -120,9 +159,21 @@ async function preflight() {
   assert.ok(/searchParams\.set\('work'/.test(workRegion), 'work view is linkable through ?work=');
   assert.ok(/previewContentDigest: preview\.previewContentDigest/.test(workRegion), 'save echoes the preview digest verbatim');
   assert.ok(!/createHash|digestValue|sha256:/.test(workRegion), 'the client never computes a digest');
-  assert.ok(/operationId: workView\.operationId/.test(workRegion), 'save reuses one operationId per click');
+  assert.ok(/operationId: view\.operationId/.test(workRegion), 'save reuses one operationId per click');
+  assert.ok(/workRequestToken|workRequestCurrent/.test(workRegion), 'async work requests are bound to their work view');
+  assert.ok(/refreshState\(\{ quiet: true, restore: false, workPanel: false \}\)/.test(workRegion), 'a work save does not rebuild the review panel or the work panel');
+  assert.ok(/renderDirectoryHosts\(\{ workPanel: options\.workPanel !== false \}\)/.test(reviewSource), 'a state read can skip the work panel repaint');
+  assert.ok(/function renderDirectoryHosts\(options = \{\}\)/.test(reviewSource), 'a directory repaint takes the opt-out');
+  assert.ok(/renderWorkPanel\(\)/.test(reviewSource.slice(reviewSource.indexOf('function renderDirectoryHosts'))), 'the default still repaints the work panel');
+  const graphSource = (await import('../scripts/graph-view.mjs')).initializeGraph.toString();
+  assert.ok(/graphHoldsFocus/.test(graphSource), 'the graph only restores node focus while it holds the focus');
+  assert.ok(/'#graph-world \.\[data-node-id\]'|'#graph-world'/.test(graphSource), 'the graph takes a node focus only from inside the graph (the work form also has data-node-id)');
   assert.ok(/readWorkStatus/.test(workRegion), 'an unknown outcome always reads status');
-  assert.ok(!/'saved'/.test(workRegion.slice(0, workRegion.indexOf('function applySavedReceipt'))), 'saved is not entered before a receipt is applied');
+  const saveOnly = workRegion.slice(workRegion.indexOf('function saveWork'), workRegion.indexOf('function applySavedReceipt'));
+  assert.ok(saveOnly.length > 0, 'saveWork is present');
+  assert.ok(!/'saved'/.test(saveOnly), 'the request path never enters saved before a receipt is applied');
+  const statusRead = workRegion.slice(workRegion.indexOf('function readWorkStatus'), workRegion.indexOf('function openWorkHistory'));
+  assert.ok(/body\?\.found === true[\s\S]*setWorkPhase\('saved'/.test(statusRead), 'the status read only enters saved after finding the receipt');
 
   const directorySource = (await import('../scripts/review-ui.mjs')).renderDirectory.toString();
   assert.ok(/options\.currentWork/.test(directorySource), 'renderDirectory takes the work badge map');
@@ -141,7 +192,7 @@ function shimSource(state, fileDigest) {
     workId: WORK_ID,
     operation: 'adjust',
     expiresAt: '2026-11-19T10:00:00.000Z',
-    diff: [{ group: 'objective', before: '验证本轮在做面板（合成）', after: '验证保存后的目标（合成）' }],
+    diff: [{ group: 'objective', before: '验证工作记录面板（合成）', after: '验证保存后的目标（合成）' }],
     sidecarPlan: [],
     notes: [],
   };
@@ -166,6 +217,19 @@ function shimSource(state, fileDigest) {
     const state = ${JSON.stringify(state)};
     const requests = [];
     window.__workRequests = requests;
+    // Held /api/state reads (see the /api/state branch below): the pending promise
+    // is dropped and the parked response is returned to the scenario, which
+    // resolves it by hand when it wants that read to land.
+    const heldReads = [];
+    window.__heldStateReads = heldReads;
+    window.__heldResolvers = [];
+    window.__releaseHeldStateRead = (index = 0) => {
+      const resolver = window.__heldResolvers.splice(index, 1)[0];
+      const response = heldReads.splice(index, 1)[0];
+      if (!resolver) return false;
+      resolver(response);
+      return true;
+    };
     const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
     const original = window.fetch.bind(window);
     window.fetch = async function (input, init) {
@@ -173,10 +237,24 @@ function shimSource(state, fileDigest) {
       const method = (init && init.method) || 'GET';
       const path = url.replace(/^[a-z]+:\\/\\/[^/]+/i, '').split('#')[0];
       if (path.startsWith('/api/state')) {
-        return json({ ok: true, state, currentStateVersion: state.stateVersion, currentDigest: ${q(fileDigest)}, writable: true, readOnlyReason: '', viewStatus: { status: 'current', message: '' } });
+        const body = { ok: true, state, currentStateVersion: state.stateVersion, currentDigest: ${q(fileDigest)}, writable: true, readOnlyReason: '', viewStatus: { status: 'current', message: '' } };
+        // A held read-back: one /api/state response is parked until the scenario
+        // releases it, so a save's delayed re-read can be tested against a panel
+        // the human has already moved on from.
+        if (window.__holdNextStateRead) {
+          window.__holdNextStateRead = false;
+          const body = { ok: true, state, currentStateVersion: state.stateVersion, currentDigest: ${q(fileDigest)}, writable: true, readOnlyReason: '', viewStatus: { status: 'current', message: '' } };
+          return new Promise((resolution) => {
+            const resolve = () => resolution(json(body));
+            window.__heldStateReads.push(resolve);
+            window.__heldResolvers.push(resolve);
+          });
+        }
+        return json(body);
       }
       if (path.startsWith('/api/current-work/preview')) {
         requests.push({ path: '/api/current-work/preview', method, body: JSON.parse(init.body) });
+        if (window.__failNextPreview) { window.__failNextPreview = false; return new Response('', { status: 500 }); }
         return json(${JSON.stringify(preview)});
       }
       if (path.startsWith('/api/current-work/save')) {
@@ -218,15 +296,19 @@ async function browserScenario(executable, outputDirectory) {
     await page.navigate(pageUrl + '?claim=' + encodeURIComponent(state.intentClaims[0].id));
     await page.waitFor('document.querySelector("#intent-list [data-testid=\'current-work-badge\']")');
 
-    // 1. Card badge is a word, not only a colour.
-    assert.match(
-      await page.evaluate('document.querySelector("#intent-list [data-testid=\'current-work-badge\']").textContent'),
-      /本轮在做 · 进行中/,
-    );
+    // 1. Card badge is a word, not only a colour; a saved work is a work record,
+    //    not "what this round is doing". Both saved works are counted at once.
+    const badgeText = await page.evaluate('document.querySelector("#intent-list [data-testid=\'current-work-badge\']").textContent');
+    assert.match(badgeText, /工作记录 · 1 项进行中、1 项已结束/);
+    assert.equal(await page.evaluate('document.querySelector("#intent-list [data-testid=\'current-work-badge\']").closest("[data-testid=\'node-current-work\']").dataset.workTotal'), '2');
+    assert.equal(await page.evaluate('document.querySelector("#intent-list [data-testid=\'current-work-badge\']").closest("[data-testid=\'node-current-work\']").dataset.workIds'), `${WORK_ID} ${ENDED_WORK_ID}`);
 
     // 2. Feature detail exposes the entry.
     await page.click(`#intent-list [data-open-node="${NODE_ID}"]`);
     await page.waitFor('document.querySelector("#review-panel [data-testid=\'current-work-entry\']")');
+    // Both works of this Feature are listed by workId; none is picked as "the" one.
+    assert.equal(await page.evaluate('document.querySelectorAll("#review-panel [data-testid=\'current-work-entry\']").length'), 2);
+    assert.match(await page.evaluate('document.querySelector("#review-panel [data-testid=\'current-work-panel-directory\']").textContent'), /已保存 2 条/);
 
     // 3. Opening the detail keeps the review URL and the review form.
     const reviewBefore = await page.evaluate(`(()=>{
@@ -264,6 +346,10 @@ async function browserScenario(executable, outputDirectory) {
     }
     assert.ok(await page.evaluate('Boolean(document.querySelector("[data-testid=\'current-work-lifecycle\']"))'));
     assert.ok(await page.evaluate('Boolean(document.querySelector("[data-testid=\'current-work-basis-review\']"))'));
+    // The overview answers "why / how far" first and never borrows the Feature's
+    // overall progress.
+    assert.equal(await page.evaluate('document.querySelector("[data-testid=\'current-work-objective\']").textContent'), '验证工作记录面板（合成）');
+    assert.match(await page.evaluate('document.querySelector("[data-testid=\'current-work-progress\']").textContent'), /本轮进展未记录/);
     assert.ok(!(await page.evaluate('Boolean(document.querySelector("[data-testid=\'current-work-detail\'] .delivery-badge"))')), 'the Feature delivery chip is not merged into the work chips');
     assert.match(detailText, /范围建议（未选定）/, 'an agent proposal is never shown as the working scope');
     assert.ok(await page.evaluate('Boolean(document.querySelector("[data-testid=\'current-work-entry\'][data-readonly=\'true\']")) === false'));
@@ -271,7 +357,7 @@ async function browserScenario(executable, outputDirectory) {
     // 5. Editor pre-fills from the saved record and submits a complete snapshot.
     await page.click('[data-work-action="edit"][data-work-operation="adjust"]');
     await page.waitFor('document.querySelector("[data-testid=\'current-work-form\']")');
-    assert.equal(await page.evaluate('document.querySelector("#work-objective-input").value'), '验证本轮在做面板（合成）');
+    assert.equal(await page.evaluate('document.querySelector("#work-objective-input").value'), '验证工作记录面板（合成）');
     await page.type('#work-objective-input', '验证保存后的目标（合成）');
     await page.click('[data-work-action="preview"]');
     await page.waitFor('document.querySelector("[data-testid=\'current-work-diff\']")');
@@ -302,6 +388,26 @@ async function browserScenario(executable, outputDirectory) {
       return host.innerHTML;
     })()`), reviewShell, 'a save only changes the directory entry selection');
 
+    // 6b. End-reason inputs survive a phase re-render: what the human typed is
+    //     what the submit would use, so the form never shows A while sending B.
+    await page.click('[data-work-action="edit"][data-work-operation="end"]');
+    await page.waitFor('document.querySelector("[data-testid=\'current-work-form\']")');
+    await page.type('#work-ended-reason-select', 'cancelled');
+    await page.type('#work-ended-note-input', '合成取消说明');
+    assert.equal(await page.evaluate('document.querySelector("#work-ended-reason-select").value'), 'cancelled');
+    assert.equal(await page.evaluate('document.querySelector("#work-ended-note-input").value'), '合成取消说明');
+    // Force the next preview to fail so the editor is re-rendered in place.
+    await page.evaluate('window.__failNextPreview = true');
+    await page.click('[data-work-action="preview"]');
+    await page.waitFor('document.querySelector("[data-field=\'endedReason\']") && document.querySelector("[data-work-testid=\'work-phase\']").dataset.phase === "failed"');
+    assert.equal(await page.evaluate('document.querySelector("#work-ended-reason-select").value'), 'cancelled', 'the typed end reason survives the re-render');
+    assert.equal(await page.evaluate('document.querySelector("#work-ended-note-input").value'), '合成取消说明', 'the typed end note survives the re-render');
+    await page.click('#current-work-close');
+    await page.waitFor('document.querySelector("#current-work-panel").hidden === true');
+    // Reopen the active work's detail for the later steps.
+    await page.click('#review-panel [data-testid="current-work-entry"]');
+    await page.waitFor("document.querySelector('[data-testid=\"current-work-detail\"]')");
+
     // 7. History is read-only and offers no preview/save control.
     await page.click(`#review-panel [data-work-action="history"]`);
     await page.waitFor('document.querySelector("[data-testid=\'current-work-history\'][data-readonly=\'true\']")');
@@ -322,6 +428,95 @@ async function browserScenario(executable, outputDirectory) {
     await page.waitFor('document.querySelector("#current-work-panel") && !document.querySelector("#current-work-panel").hidden');
     assert.match(await page.evaluate('document.querySelector("#review-panel-body").textContent'), /从左侧图谱/);
     assert.equal(await page.evaluate('document.querySelector("#review-version").textContent'), '12');
+
+    // 10. 新建工作记录 only opens an unsaved draft: the URL is untouched, no
+    //     request is made, nothing looks saved, and cancelling leaves the panel.
+    await page.click('#current-work-close');
+    await page.waitFor('document.querySelector("#current-work-panel").hidden === true');
+    await page.click(`#intent-list [data-open-node="${NODE_ID}"]`);
+    await page.waitFor('document.querySelector("#review-panel [data-work-action=\'new\']")');
+    const requestsBeforeDraft = await page.evaluate('window.__workRequests.length');
+    await page.click('#review-panel [data-work-action="new"]');
+    await page.waitFor('document.querySelector("[data-testid=\'current-work-form\']")');
+    assert.equal(await page.evaluate('document.querySelector("[data-testid=\'current-work-form\']").dataset.draft'), 'true');
+    assert.match(await page.evaluate('document.querySelector("[data-testid=\'current-work-draft-note\']").textContent'), /未保存草稿/);
+    assert.equal(await page.evaluate('location.search.includes("work=")'), false, 'a draft is not linkable and does not rewrite the URL');
+    assert.equal(await page.evaluate('window.__workRequests.length'), requestsBeforeDraft, 'opening a draft makes no request');
+    assert.equal(await page.evaluate('document.querySelector("#current-work-panel-title").textContent.includes("未保存草稿")'), true);
+    await page.click('[data-work-action="back"]');
+    await page.waitFor('document.querySelector("#current-work-panel").hidden === true');
+    assert.equal(await page.evaluate('window.__workRequests.length'), requestsBeforeDraft, 'cancelling a draft makes no request');
+
+    // 11. A save read-back that lands late never touches a later view: work A
+    //     saves, its /api/state read is held, the panel moves on to a new draft B
+    //     whose fields are being filled with the caret mid-text, and only then is
+    //     A's read released. B is a different view with no workId yet, so A's
+    //     read-back must not rewrite it — not its data and not its DOM: the form
+    //     element, the focus and the caret must all survive (a rebuilt panel
+    //     would blank the editor and drop the caret).
+    await page.click(`#intent-list [data-open-node="${NODE_ID}"]`);
+    await page.waitFor('document.querySelector("#review-panel [data-testid=\'current-work-entry\']")');
+    await page.click('#review-panel [data-testid="current-work-entry"]');
+    await page.waitFor("document.querySelector('[data-testid=\"current-work-detail\"]')");
+    await page.click('[data-work-action="edit"][data-work-operation="adjust"]');
+    await page.waitFor('document.querySelector("[data-testid=\'current-work-form\']")');
+    await page.evaluate('window.__holdNextStateRead = true');
+    await page.click('[data-work-action="preview"]');
+    await page.waitFor('document.querySelector("[data-testid=\'current-work-diff\']")');
+    await page.click('[data-work-action="save"]');
+    // The save is committed and its own re-read is now parked: the phase is idle
+    // again, so the panel can be left while that read is still outstanding.
+    await page.waitFor('document.querySelector("[data-testid=\'current-work-phase\']").dataset.phase === "idle"');
+    assert.equal(await page.evaluate('window.__heldStateReads.length'), 1, 'exactly one /api/state read is parked');
+    // The phase is idle, so the panel can be left while that read is outstanding.
+    await page.click('#current-work-close');
+    await page.waitFor('document.querySelector("#current-work-panel").hidden === true');
+    await page.click('#review-panel [data-work-action="new"]');
+    await page.waitFor('document.querySelector("[data-testid=\'current-work-form\']").dataset.draft === "true"');
+    await page.type('#work-title-input', '草稿 B 的标题');
+    // A half-typed objective with the caret in the middle of it, plus the page-side
+    // identity of this draft (a returned DOM node would be serialized away).
+    await page.type('#work-objective-input', '草稿 B 的目');
+    await page.evaluate(`(()=>{
+      const form = document.querySelector('[data-testid="current-work-form"]');
+      const objective = document.querySelector('#work-objective-input');
+      objective.focus();
+      objective.setSelectionRange(5, 5);
+      window.__hostDraftB = { form, objective };
+    })()`);
+    assert.equal(await page.evaluate('document.activeElement === window.__hostDraftB.objective'), true, 'the draft objective holds the focus before the release');
+    // Release A's read. The parked response is resolved by hand, so the wait below
+    // is for the page to have applied it — not merely for the slot to be empty.
+    assert.equal(await page.evaluate('window.__releaseHeldStateRead()'), true, 'the parked read is released');
+    await page.waitFor('window.__heldStateReads.length === 0');
+    await page.waitFor('document.querySelector("#review-version").textContent === String(12)');
+    await new Promise((done) => setTimeout(done, 500));
+    // Same element (identity, not a serialized copy), still connected, still the
+    // unsaved draft, with the typed values, the focus and the caret untouched.
+    const draftIdentity = await page.evaluate(`(() => {
+      const b = window.__hostDraftB;
+      const form = document.querySelector('[data-testid="current-work-form"]');
+      const objective = document.querySelector('#work-objective-input');
+      return {
+        sameForm: form === b.form && form.isConnected,
+        sameObjective: objective === b.objective && objective.isConnected,
+        draftFlag: form ? form.dataset.draft : null,
+        titleValue: document.querySelector('#work-title-input').value,
+        objectiveValue: objective.value,
+        focused: document.activeElement === b.objective,
+        caret: objective.selectionStart === 5 && objective.selectionEnd === 5,
+      };
+    })()`);
+    assert.deepEqual(draftIdentity, {
+      sameForm: true,
+      sameObjective: true,
+      draftFlag: 'true',
+      titleValue: '草稿 B 的标题',
+      objectiveValue: '草稿 B 的目',
+      focused: true,
+      caret: true,
+    }, 'a late save read-back keeps the new draft form, its values, its focus and its caret');
+    assert.equal(await page.evaluate('location.search.includes("work=")'), false, 'the draft still has no work query');
   } finally {
     runtimeErrors.push(...browser.events.filter((event) => event.method === 'Runtime.exceptionThrown'));
     await browser.close();

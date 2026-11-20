@@ -5,6 +5,7 @@ import { graphStyles, initializeGraph, renderGraphShell } from './graph-view.mjs
 import { deriveNodeIntentSummary, digestValue } from './intent-model.mjs';
 import { deriveCurrentWorkIndex, deriveFeatureProgress, featureContextFingerprintContent, getFeatureProgressBrowserSource } from './feature-progress.mjs';
 import { initializeReview, renderDeferQueue, renderDirectory } from './review-ui.mjs';
+import { nodeDisplayHtml, nodeDisplayProjection, nodeDisplayText, nodeWorkCounts, nodeWorkCoverage, nodeWorkEmptyText, nodeWorkIndexByNode, nodeWorkListLabel, nodeWorkSummaryText } from './node-display.mjs';
 import { deriveRoadmap } from './roadmap-model.mjs';
 import { currentWorkStyles, featureProgressCardLines, featureProgressSummaryMap, renderCurrentWorkBadge, renderCurrentWorkDetail, renderCurrentWorkEditor, renderCurrentWorkEntry, renderCurrentWorkHistory, renderCurrentWorkPreview, renderFeatureProgressDetail, renderRoadmapDetail, renderRoadmapFilters, renderRoadmapIndex, roadmapStyles } from './roadmap-ui.mjs';
 import { deriveProgress, deriveTimeline } from './timeline-model.mjs';
@@ -128,27 +129,13 @@ function featureProgressData(state) {
 }
 
 /**
- * nodeId -> {workId, workTitle, lifecycle} for the card badge on the *first*
- * viewport. This must match what review-ui.mjs's `currentWorkByNode` computes on
- * every later refresh (same source `deriveCurrentWorkIndex`, same "best
- * lifecycle wins" rank), otherwise the badge appears or disappears on reload.
+ * nodeId -> {nodeId, entries, counts} for the cards on the *first* viewport.
+ * This must match what review-ui.mjs's `currentWorkByNode` computes on every
+ * later refresh, so both call the same pure `nodeWorkIndexByNode` over
+ * `deriveCurrentWorkIndex`: the same works, the same counts, no "best" pick.
  */
 function currentWorkByNode(state) {
-  const index = deriveCurrentWorkIndex(state);
-  if (!index || !Array.isArray(index.entries)) return null;
-  const rank = {active: 0, paused: 1, ended: 2};
-  const map = {};
-  for (const entry of index.entries) {
-    if (!entry || typeof entry.nodeId !== 'string') continue;
-    const best = map[entry.nodeId];
-    if (best && (rank[entry.lifecycle] ?? 3) >= (rank[best.lifecycle] ?? 3)) continue;
-    map[entry.nodeId] = {
-      workId: entry.workId,
-      workTitle: entry.workTitle ?? '',
-      lifecycle: entry.lifecycle ?? 'ended',
-    };
-  }
-  return map;
+  return nodeWorkIndexByNode(deriveCurrentWorkIndex(state));
 }
 
 function graphData(state, progress = featureProgressData(state)) {
@@ -167,6 +154,7 @@ function graphData(state, progress = featureProgressData(state)) {
       const roadmap = node.kind === 'capability' ? roadmapByNode.get(node.id) : null;
       const feature = node.kind === 'capability' ? progress.byNode.get(node.id) : null;
       const lines = feature ? featureProgressCardLines(feature) : null;
+      const display = nodeDisplayProjection(node, state);
       return {
         id: node.id,
         label: node.label,
@@ -174,7 +162,13 @@ function graphData(state, progress = featureProgressData(state)) {
         kind: node.kind,
         status,
         anchor: 'node-' + Array.from(new TextEncoder().encode(node.id), (byte) => byte.toString(16).padStart(2, '0')).join(''),
-        kindLabel: node.kind,
+        kindLabel: node.kindLabel ?? node.kind,
+        // The node's own text is its ORIGINAL text, projected by the one shared
+        // helper the sidebar and the static map also use; the projection says the
+        // purpose is not recorded separately. It travels as plain text: this
+        // dialog is read-only and never injects markup.
+        sourceLabel: display.sourceLabel,
+        displayText: nodeDisplayText(display),
         statusLabel: status,
         roadmapLabel: roadmap ? `规划 ${horizonLabels[roadmap.horizon] ?? roadmap.horizon} · ${statusLabels[roadmap.status] ?? roadmap.status}` : undefined,
         progressLine: lines?.line1,
@@ -284,6 +278,15 @@ export function renderReview(snapshot, options = {}) {
     `renderCurrentWorkEditor: ${renderCurrentWorkEditor.toString()},\n` +
     `renderCurrentWorkPreview: ${renderCurrentWorkPreview.toString()},\n` +
     `renderCurrentWorkHistory: ${renderCurrentWorkHistory.toString()},\n` +
+    `nodeDisplayProjection: ${nodeDisplayProjection.toString()},\n` +
+    `nodeDisplayHtml: ${nodeDisplayHtml.toString()},\n` +
+    `nodeDisplayText: ${nodeDisplayText.toString()},\n` +
+    `nodeWorkCounts: ${nodeWorkCounts.toString()},\n` +
+    `nodeWorkIndexByNode: ${nodeWorkIndexByNode.toString()},\n` +
+    `nodeWorkCoverage: ${nodeWorkCoverage.toString()},\n` +
+    `nodeWorkSummaryText: ${nodeWorkSummaryText.toString()},\n` +
+    `nodeWorkListLabel: ${nodeWorkListLabel.toString()},\n` +
+    `nodeWorkEmptyText: ${nodeWorkEmptyText.toString()},\n` +
     `deriveRoadmap: ${deriveRoadmap.toString()},\n` +
     `deriveProgress: ${deriveProgress.toString()},\n` +
     `deriveTimeline: ${deriveTimeline.toString()},\n` +
@@ -380,7 +383,7 @@ ${currentWorkStyles}
     <section id="history-panel" class="history-panel" aria-label="历史版本只读详情" hidden></section>
     <section id="version-diff-panel" class="version-diff-panel" aria-label="版本差异只读详情" hidden></section>
     <section id="current-work-panel" class="current-work-panel" role="region" aria-labelledby="current-work-panel-title" tabindex="-1" data-testid="current-work-panel" hidden>
-      <header class="current-work-panel-head"><div><p class="eyebrow">本轮在做 · 保存记录（非评审、非交付、非授权）</p><h2 id="current-work-panel-title" tabindex="-1">本轮在做</h2></div><button type="button" id="current-work-close" data-testid="current-work-close" aria-label="关闭本轮在做" hidden>关闭</button></header>
+      <header class="current-work-panel-head"><div><p class="eyebrow">工作记录 · 保存记录（非评审、非交付、非授权）</p><h2 id="current-work-panel-title" tabindex="-1">工作记录</h2></div><button type="button" id="current-work-close" data-testid="current-work-close" aria-label="关闭工作记录面板" hidden>关闭</button></header>
       <div id="current-work-panel-body"></div>
     </section>
   </aside>

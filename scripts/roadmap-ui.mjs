@@ -80,6 +80,19 @@ export const roadmapStyles = `
 .node-progress span{display:block}
 .node-progress .node-progress-next{color:#2f4f43}
 .node-progress .delivery-badge{display:inline-flex;margin:0 0 .25rem}
+.node-display{margin:.35rem 0;padding:.4rem .55rem;border:1px solid #d5e2db;border-radius:5px;background:#f7fbf9;min-width:0;overflow-wrap:anywhere}
+.node-display-type{margin:0 0 .2rem;font-size:.76rem;color:#3d5750}
+.node-display-kind{display:inline-flex;align-items:center;border:1px solid #bcd2e4;border-radius:999px;padding:.02rem .4rem;background:var(--blue-soft);color:#1d4d7a;font-weight:600}
+.node-display-kind-meta{color:var(--muted);margin-left:.3rem}
+.node-display-description{margin:.2rem 0;padding:.25rem .5rem;border-left:3px solid #9cc6b2;background:var(--surface);font-size:.84rem;white-space:pre-wrap}
+.node-display-purpose{margin:.3rem 0;font-size:.8rem;color:#3d5750}
+.node-display-note{margin:.2rem 0;color:var(--muted);font-size:.76rem}
+.node-display-missing{margin:.2rem 0;color:#6d4a10;font-size:.8rem}
+.node-display-meta{margin:.25rem 0;color:var(--muted);font-size:.76rem}
+.node-display-related{margin:.2rem 0;font-size:.82rem}
+.node-display-evidence{margin:.35rem 0 0;font-size:.78rem}
+.node-display-evidence summary{cursor:pointer}
+.node-display-evidence ul{margin:.25rem 0;padding-left:1.1rem}
 `;
 
 export function renderRoadmapFilters() {
@@ -146,10 +159,23 @@ export const currentWorkStyles = `
 .current-work-diff pre{margin:0;max-height:9rem;overflow:auto;font-size:.72rem;white-space:pre-wrap;overflow-wrap:anywhere}
 .current-work-history{list-style:none;margin:.3rem 0;padding:0;display:grid;gap:.3rem}
 .current-work-history li{border:1px solid var(--line);border-radius:4px;padding:.3rem .45rem;background:var(--paper)}
+.current-work-overview{background:var(--paper);border:1px solid #d5e2db;border-radius:6px;padding:.55rem .65rem;margin:.4rem 0 .6rem;min-width:0;overflow-wrap:anywhere}
+.current-work-overview h4{margin:.1rem 0 .3rem}
+.current-work-overview .intent-fields{grid-template-columns:max-content minmax(0,1fr)}
+.current-work-overview dd{min-width:0;margin:0}
+.current-work-progress-note{margin:.2rem 0;font-size:.84rem;color:#445853;border:1px dashed #aebcb6;border-radius:4px;padding:.35rem .5rem;background:var(--surface)}
+.current-work-draft-note{border:1px dashed #d9b96a;background:#fbf5e6;border-radius:4px;padding:.4rem .55rem;margin:.3rem 0;font-size:.82rem;color:#6d4a10}
+.current-work-related{border:1px solid var(--line);border-radius:5px;padding:.45rem .6rem;margin:.35rem 0;background:var(--paper);min-width:0}
+.current-work-related h4{margin:0 0 .25rem;font-size:.86rem}
+.current-work-related p{margin:.2rem 0}
+.current-work-panel-head-actions{display:flex;flex-wrap:wrap;gap:.35rem}
+.current-work-subgroup{display:flex;flex-wrap:wrap;gap:.35rem;align-items:baseline;margin:.45rem 0 .15rem;font-size:.84rem;color:var(--muted)}
+.node-current-work{display:flex;flex-wrap:wrap;gap:.25rem .4rem;align-items:baseline;margin:.2rem 0;font-size:.78rem}
+.current-work-ids{color:var(--muted);font-size:.7rem;overflow-wrap:anywhere}
 `;
 
 /**
- * One entry in a Feature detail's 本轮在做 list.
+ * One entry in a Feature detail's saved-work list (工作记录).
  * `entry`: {workId, nodeId, workTitle, featureLabel, lifecycle, updatedAt,
  *           basisReview, endsReason}
  */
@@ -194,17 +220,22 @@ export function renderCurrentWorkBadge(entry) {
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[character]);
-  const lifecycleLabels = { active: '进行中', paused: '已暂停', ended: '已结束' };
   const lifecycle = typeof entry.lifecycle === 'string' ? entry.lifecycle : 'ended';
-  const title = typeof entry.workTitle === 'string' && entry.workTitle ? entry.workTitle : '本轮工作';
-  const label = `本轮在做 · ${lifecycleLabels[lifecycle] ?? lifecycle}`;
+  const title = typeof entry.workTitle === 'string' && entry.workTitle ? entry.workTitle : '工作记录';
+  // A word, never only a colour. Ended work reads as history so a stale work
+  // cannot keep claiming "we are doing this now".
+  const label = lifecycle === 'ended'
+    ? '历史工作 · 已结束'
+    : lifecycle === 'paused' ? '工作记录 · 已暂停' : '工作记录 · 进行中';
   return `<span class="current-work-badge" data-testid="current-work-badge" data-lifecycle="${esc(lifecycle)}" data-work-id="${esc(entry.workId)}" title="${esc(title)}">${esc(label)}</span>`;
 }
 
 /**
- * One complete work reading, in the frozen §13.2 order:
- * 上层目标 / 工程阶段 → 依据需求 → 本轮做／不做 → 验收目标 →
+ * One complete work reading: a top overview (why / boundary / recorded progress
+ * / stop / responsibility / saved time and source), then the frozen §13.2 order:
+ * 上层目标 / 工程阶段 → 依据需求 → 本轮目标 → 本轮做／不做 → 验收目标 →
  * 整体交付及已记录未闭环路径 → 本轮停点／下一步 → 范围建议（未选定） → 依据复核.
+ * Layer warnings stay outside any collapsible area.
  */
 export function renderCurrentWorkDetail(work, options = {}) {
   if (!work || typeof work !== 'object') return '';
@@ -296,17 +327,47 @@ export function renderCurrentWorkDetail(work, options = {}) {
   const controlsHtml = historical
     ? '<p class="current-work-boundary" data-readonly="true">历史快照只读：不显示保存或预览控制，不写入当前状态。</p>'
     : `<div class="current-work-actions">
-        ${lifecycle.status === 'ended' ? '' : '<button type="button" data-work-action="edit" data-work-operation="adjust" data-work-id="' + esc(workId) + '">编辑本轮工作</button>'}
+        ${lifecycle.status === 'ended' ? '' : '<button type="button" data-work-action="edit" data-work-operation="adjust" data-work-id="' + esc(workId) + '">编辑工作记录</button>'}
         ${lifecycle.status === 'active' ? '<button type="button" data-work-action="edit" data-work-operation="pause" data-work-id="' + esc(workId) + '">暂停</button>' : ''}
         ${lifecycle.status === 'paused' ? '<button type="button" data-work-action="edit" data-work-operation="resume" data-work-id="' + esc(workId) + '">继续</button>' : ''}
         ${lifecycle.status === 'ended' ? '' : '<button type="button" data-work-action="edit" data-work-operation="end" data-work-id="' + esc(workId) + '">结束本轮</button>'}
         <button type="button" data-work-action="history" data-work-id="${esc(workId)}">历次修订</button>
         <button type="button" data-work-action="back">回到现在</button>
       </div>`;
+  // Top overview: answer "why / how far / where did we stop" before the full
+  // reading chain. It never replaces the chain below and never borrows the
+  // Feature's overall progress.
+  const objectiveText = typeof work.objective === 'string' && work.objective.trim() ? work.objective : null;
+  const sourceLabels = { agent_organized: '代理整理（非评审）', user_note: '用户备注（非评审）' };
+  const sourceText = typeof work.source === 'string' && work.source
+    ? (sourceLabels[work.source] ?? work.source)
+    : '来源未记录';
+  const savedAtText = work.updatedAt ? String(work.updatedAt).slice(0, 19).replace('T', ' ') : '';
+  const resumeSummary = resume
+    ? `停点：${esc(resume.stopPoint ?? '未记录')}；下一步：${esc(resume.nextStep ?? '未记录')}`
+    : '停点与下一步未记录';
+  const responsibilitySummary = resume
+    ? `${esc(responsibilityLabels[resume.responsibility] ?? resume.responsibility ?? '未记录')} · ${esc(asArray(resume.authorizationRequired).length ? asArray(resume.authorizationRequired).map((value) => authorizationLabels[value] ?? value).join('、') : '未记录所需授权')}`
+    : '责任方与授权未记录';
+  const overviewHtml = `<section class="current-work-overview" data-testid="current-work-overview" data-record-state="${historical ? 'history' : 'saved'}">
+    <h4>工作概览</h4>
+    <div class="current-work-state">
+      <span class="current-work-chip" data-testid="current-work-record-state" data-record-state="${historical ? 'history' : 'saved'}">${historical ? '历史记录（只读）' : '已保存记录'}</span>
+      <span class="current-work-chip" data-lifecycle="${esc(lifecycle.status ?? 'ended')}">${esc(lifecycleText)}</span>
+    </div>
+    <dl class="intent-fields">
+      <dt>为什么做</dt><dd data-testid="current-work-objective">${objectiveText ? esc(objectiveText) : '目标未记录'}</dd>
+      <dt>本轮边界</dt><dd>${asArray(work.scope).length} 条纳入 · ${asArray(work.exclusions).length} 条排除 · ${asArray(work.acceptanceCriteria).length} 条验收条件（完整清单见下）</dd>
+      <dt>已记录进展</dt><dd class="current-work-progress-note" data-testid="current-work-progress" data-recorded="false">本轮进展未记录：这条工作记录没有独立的进展字段，也不借用功能整体进度。</dd>
+      <dt>停点与下一步</dt><dd>${resumeSummary}</dd>
+      <dt>责任方与授权</dt><dd>${responsibilitySummary}</dd>
+      <dt>保存与来源</dt><dd>${savedAtText ? `保存于 ${esc(savedAtText)} · ` : ''}${esc(sourceText)}</dd>
+    </dl>
+  </section>`;
   return `<article class="current-work-detail" data-testid="current-work-detail" data-work-id="${esc(workId)}" data-lifecycle="${esc(lifecycle.status ?? 'ended')}"${historical ? ' data-readonly="true"' : ''}>
     <header>
-      <p class="eyebrow">本轮在做 · 保存记录（非评审、非授权）</p>
-      <h3>${esc(work.workTitle || '（未命名本轮工作）')}</h3>
+      <p class="eyebrow">${historical ? '工作记录 · 历史快照（只读）' : '工作记录 · 已保存（非评审、非授权）'}</p>
+      <h3>${esc(work.workTitle || '（未命名工作记录）')}</h3>
       <div class="current-work-state">
         <span class="current-work-chip" data-testid="current-work-lifecycle" data-lifecycle="${esc(lifecycle.status ?? 'ended')}">${esc(lifecycleText)}</span>
         <span class="current-work-chip" data-testid="current-work-basis-review">依据复核：${esc(statusLabels[work.contextStatus] ?? '未比较')}</span>
@@ -315,11 +376,14 @@ export function renderCurrentWorkDetail(work, options = {}) {
       <p class="current-work-meta">所属能力：<code>${esc(work.nodeId ?? '未记录')}</code>${work.featureLabel ? ` · ${esc(work.featureLabel)}` : ''} · 工作 ID：<code>${esc(workId)}</code></p>
       ${work.updatedAt ? `<p class="current-work-meta">最近保存：${esc(String(work.updatedAt).slice(0, 19).replace('T', ' '))}</p>` : ''}
     </header>
+    ${overviewHtml}
     ${layer('上层目标', upper.productGoal, 'work-layer-product-goal')}
     ${layer('工程阶段', upper.stage, 'work-layer-stage')}
     <h4>依据需求</h4>
     ${adoptedHtml}
     <p class="current-work-meta">依据复核：${esc(statusLabels[work.contextStatus] ?? '未比较')}${work.contentComparable === false ? '（本页未注入内容摘要，因此不比较正文差异）' : ''}</p>
+    <h4>本轮目标</h4>
+    ${objectiveText ? `<p class="intent-statement" data-testid="current-work-objective-body">${esc(objectiveText)}</p>` : '<p class="current-work-muted">目标未记录。</p>'}
     <h4>本轮做</h4>
     ${itemList(work.scope, '本轮做未记录（空数组只表示这一版没有记录，不表示范围无限）')}
     <h4>本轮不做</h4>
@@ -339,7 +403,7 @@ export function renderCurrentWorkDetail(work, options = {}) {
     ${supportDigestNote ? `<p class="current-work-warning" data-testid="current-work-support-comparison" data-comparable="false">${esc(supportDigestNote)}</p>` : work.supportContentComparable === true ? '<p class="current-work-meta" data-testid="current-work-support-comparison" data-comparable="true">实现／验证支持材料有保存摘要，可逐项比较。</p>' : ''}
     ${changesHtml}
     ${work.changesTruncated === true ? '<p class="current-work-warning">变化类别过多，只显示前一部分；完整记录在状态文件里。</p>' : ''}
-    <p class="current-work-boundary">本轮在做是保存的工作说明：不是人工评审，不是 Feature 交付阶段，不是完成度，也不授予执行或写入权限。</p>
+    <p class="current-work-boundary">工作记录是保存的工作说明：不是人工评审，不是 Feature 交付阶段，不是完成度，也不授予执行或写入权限。</p>
     ${controlsHtml}
   </article>`;
 }
@@ -363,7 +427,10 @@ export function renderCurrentWorkEditor(work, options = {}) {
   const operation = ['open', 'adjust', 'pause', 'resume', 'end'].includes(options.operation)
     ? options.operation
     : 'adjust';
-  const operationLabels = { open: '开始本轮', adjust: '编辑本轮', pause: '暂停本轮', resume: '继续本轮', end: '结束本轮' };
+  const operationLabels = {
+    open: '新建工作记录', adjust: '编辑工作记录', pause: '暂停工作记录',
+    resume: '继续工作记录', end: '结束工作记录',
+  };
   const lifecycleLabels = { active: '进行中', paused: '已暂停', ended: '已结束' };
   const responsibilityLabels = { agent: '代理', user: '用户', device_operator: '设备操作者', unknown: '未指定' };
   const authorizationLabels = {
@@ -371,28 +438,66 @@ export function renderCurrentWorkEditor(work, options = {}) {
     state_write: '写项目状态', service_restart: '停启本地服务', distribution: '构建或发布正式包',
   };
   const endedLabels = { handoff: '已交接', cancelled: '已取消', scope_completed: '范围完成', other: '其它原因' };
+  const selectionLabels = {
+    '': '未指定（保存为代理建议，未选定）',
+    agent_proposed_unselected: '代理建议（未选定）',
+    within_task_authorization: '任务授权范围内',
+    user_selected: '用户选定（在下方写出来源）',
+  };
   const busy = options.phase === 'previewing' || options.phase === 'saving';
   const businessReadOnly = operation === 'pause' || operation === 'resume' || operation === 'end';
   const lifecycle = work.lifecycle && typeof work.lifecycle === 'object' ? work.lifecycle : { status: 'active', endedReason: null, endedNote: null };
-  const scope = asArray(work.scope).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
-  const exclusions = asArray(work.exclusions).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
-  const acceptance = asArray(work.acceptanceCriteria).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
   const resume = work.resume && typeof work.resume === 'object' ? work.resume : null;
+  // A draft survives phase changes: values come from what the human typed, and
+  // only fall back to the saved projection when there is no draft yet. A new
+  // work (`workId === null`) always starts from an empty draft.
+  const draft = options.draft && typeof options.draft === 'object' ? options.draft : null;
+  const workScope = asArray(work.scope).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
+  const workExclusions = asArray(work.exclusions).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
+  const workAcceptance = asArray(work.acceptanceCriteria).map((item) => (item && typeof item === 'object' ? item.statement : item)).filter((value) => typeof value === 'string');
+  const values = {
+    workTitle: typeof work.workTitle === 'string' ? work.workTitle : '',
+    objective: typeof work.objective === 'string' ? work.objective : '',
+    scope: workScope,
+    exclusions: workExclusions,
+    acceptanceCriteria: workAcceptance,
+    sourceRefs: asArray(work.sourceRefs),
+    stopPoint: typeof resume?.stopPoint === 'string' ? resume.stopPoint : '',
+    nextStep: typeof resume?.nextStep === 'string' ? resume.nextStep : '',
+    responsibility: typeof resume?.responsibility === 'string' ? resume.responsibility : 'agent',
+    authorizationRequired: asArray(resume?.authorizationRequired),
+    selectionKind: work.selection && typeof work.selection.kind === 'string' ? work.selection.kind : '',
+    selectionSourceRefs: asArray(work.selection?.sourceRefs),
+    // The end reason and note are typed in the same form, so they belong to the
+    // draft too; otherwise a phase re-render would put the saved values back
+    // while the screen keeps claiming the typed ones.
+    endedReason: typeof lifecycle.endedReason === 'string' ? lifecycle.endedReason : 'scope_completed',
+    endedNote: typeof lifecycle.endedNote === 'string' ? lifecycle.endedNote : '',
+  };
+  if (draft) {
+    for (const key of Object.keys(values)) if (draft[key] !== undefined) values[key] = draft[key];
+  }
+  const scope = asArray(values.scope);
+  const exclusions = asArray(values.exclusions);
+  const acceptance = asArray(values.acceptanceCriteria);
   const readOnlyAttr = businessReadOnly ? ' readonly aria-readonly="true"' : '';
   const disabledAttr = busy ? ' disabled' : '';
+  const selectionKind = selectionLabels[values.selectionKind] ? values.selectionKind : '';
   const authorizationOptions = Object.keys(authorizationLabels).map((value) => {
-    const checked = asArray(resume?.authorizationRequired).includes(value) ? ' checked' : '';
+    const checked = asArray(values.authorizationRequired).includes(value) ? ' checked' : '';
     return `<label class="current-work-check"><input type="checkbox" data-field="authorizationRequired" value="${escAttr(value)}"${checked}${businessReadOnly || busy ? ' disabled' : ''}> ${esc(authorizationLabels[value])}</label>`;
   }).join('');
-  return `<form class="current-work-form" data-testid="current-work-form" data-form="current-work" data-work-id="${escAttr(work.workId ?? '')}" data-operation="${escAttr(operation)}" data-node-id="${escAttr(work.nodeId ?? '')}" data-predecessor-id="${escAttr(work.currentRecordId ?? '')}" data-readonly="${businessReadOnly ? 'true' : 'false'}" aria-label="${escAttr(operationLabels[operation])}" novalidate>
+  const isDraftOpen = operation === 'open' && work.workId === null;
+  return `<form class="current-work-form" data-testid="current-work-form" data-form="current-work" data-work-id="${escAttr(work.workId ?? '')}" data-operation="${escAttr(operation)}" data-node-id="${escAttr(work.nodeId ?? '')}" data-predecessor-id="${escAttr(work.currentRecordId ?? '')}" data-readonly="${businessReadOnly ? 'true' : 'false'}" data-draft="${isDraftOpen ? 'true' : 'false'}" aria-label="${escAttr(operationLabels[operation])}" novalidate>
     <p class="eyebrow">${esc(operationLabels[operation])} · 提交完整快照</p>
+    ${isDraftOpen ? '<p class="current-work-draft-note" data-testid="current-work-draft-note" data-record-state="draft">未保存草稿：还没有写入状态文件；关闭或取消不会留下记录。只有生成预览、明确保存并回读成功后，它才出现在工作列表。</p>' : ''}
     <p class="current-work-meta">表单每次都提交完整工作快照，不会让服务端合并旧值。${businessReadOnly ? '暂停／继续／结束只改生命周期：业务字段按保存值只读带入，改动会被服务端拒绝。' : ''}</p>
     <fieldset class="current-work-business">
-      <legend>本轮工作</legend>
+      <legend>工作内容</legend>
       <label for="work-title-input">标题</label>
-      <input type="text" id="work-title-input" data-field="workTitle" value="${escAttr(work.workTitle ?? '')}" maxlength="200"${readOnlyAttr}${disabledAttr}>
-      <label for="work-objective-input">目标</label>
-      <textarea id="work-objective-input" data-field="objective" maxlength="2000"${readOnlyAttr}${disabledAttr}>${esc(work.objective ?? '')}</textarea>
+      <input type="text" id="work-title-input" data-field="workTitle" value="${escAttr(values.workTitle)}" maxlength="200"${readOnlyAttr}${disabledAttr}>
+      <label for="work-objective-input">为什么做（本轮目标）</label>
+      <textarea id="work-objective-input" data-field="objective" maxlength="2000"${readOnlyAttr}${disabledAttr}>${esc(values.objective)}</textarea>
       <label for="work-scope-input">本轮做（每行一条）</label>
       <textarea id="work-scope-input" data-field="scope"${readOnlyAttr}${disabledAttr}>${esc(scope.join('\n'))}</textarea>
       <label for="work-exclusions-input">本轮不做（每行一条）</label>
@@ -400,17 +505,27 @@ export function renderCurrentWorkEditor(work, options = {}) {
       <label for="work-acceptance-input">验收目标（每行一条）</label>
       <textarea id="work-acceptance-input" data-field="acceptanceCriteria"${readOnlyAttr}${disabledAttr}>${esc(acceptance.join('\n'))}</textarea>
       <label for="work-source-refs-input">来源引用（每行一条）</label>
-      <textarea id="work-source-refs-input" data-field="sourceRefs"${readOnlyAttr}${disabledAttr}>${esc(asArray(work.sourceRefs).join('\n'))}</textarea>
+      <textarea id="work-source-refs-input" data-field="sourceRefs"${readOnlyAttr}${disabledAttr}>${esc(asArray(values.sourceRefs).join('\n'))}</textarea>
+    </fieldset>
+    <fieldset>
+      <legend>范围选定</legend>
+      <label for="work-selection-select">这份范围是谁选定的</label>
+      <select id="work-selection-select" data-field="selectionKind"${businessReadOnly || busy ? ' disabled' : ''}>
+        ${Object.keys(selectionLabels).map((value) => `<option value="${escAttr(value)}"${selectionKind === value ? ' selected' : ''}>${esc(selectionLabels[value])}</option>`).join('')}
+      </select>
+      <label for="work-selection-refs-input">范围来源引用（每行一条）</label>
+      <textarea id="work-selection-refs-input" data-field="selectionSourceRefs"${readOnlyAttr}${disabledAttr}>${esc(asArray(values.selectionSourceRefs).join('\n'))}</textarea>
+      <p class="current-work-meta">只有你在这里实际选中「用户选定」并写下来源，才会记录为用户选定；助手预填不算用户选定，空白保存为代理建议（未选定）。</p>
     </fieldset>
     <fieldset>
       <legend>停点与下一步</legend>
       <label for="work-stop-point-input">本轮停点</label>
-      <input type="text" id="work-stop-point-input" data-field="stopPoint" value="${escAttr(resume?.stopPoint ?? '')}" maxlength="2000"${readOnlyAttr}${disabledAttr}>
+      <input type="text" id="work-stop-point-input" data-field="stopPoint" value="${escAttr(values.stopPoint)}" maxlength="2000"${readOnlyAttr}${disabledAttr}>
       <label for="work-next-step-input">下一步</label>
-      <input type="text" id="work-next-step-input" data-field="nextStep" value="${escAttr(resume?.nextStep ?? '')}" maxlength="2000"${readOnlyAttr}${disabledAttr}>
+      <input type="text" id="work-next-step-input" data-field="nextStep" value="${escAttr(values.nextStep)}" maxlength="2000"${readOnlyAttr}${disabledAttr}>
       <label for="work-responsibility-select">责任方</label>
       <select id="work-responsibility-select" data-field="responsibility"${businessReadOnly || busy ? ' disabled' : ''}>
-        ${Object.keys(responsibilityLabels).map((value) => `<option value="${escAttr(value)}"${(resume?.responsibility ?? 'agent') === value ? ' selected' : ''}>${esc(responsibilityLabels[value])}</option>`).join('')}
+        ${Object.keys(responsibilityLabels).map((value) => `<option value="${escAttr(value)}"${values.responsibility === value ? ' selected' : ''}>${esc(responsibilityLabels[value])}</option>`).join('')}
       </select>
       <p class="current-work-meta">所需授权（记录建议，不会自动执行）</p>
       ${authorizationOptions}
@@ -419,19 +534,20 @@ export function renderCurrentWorkEditor(work, options = {}) {
       <legend>结束原因</legend>
       <label for="work-ended-reason-select">原因</label>
       <select id="work-ended-reason-select" data-field="endedReason"${busy ? ' disabled' : ''}>
-        ${Object.keys(endedLabels).map((value) => `<option value="${escAttr(value)}"${(lifecycle.endedReason ?? 'scope_completed') === value ? ' selected' : ''}>${esc(endedLabels[value])}</option>`).join('')}
+        ${Object.keys(endedLabels).map((value) => `<option value="${escAttr(value)}"${(values.endedReason ?? 'scope_completed') === value ? ' selected' : ''}>${esc(endedLabels[value])}</option>`).join('')}
       </select>
       <label for="work-ended-note-input">说明（可选）</label>
-      <input type="text" id="work-ended-note-input" data-field="endedNote" value="${escAttr(lifecycle.endedNote ?? '')}" maxlength="2000"${busy ? ' disabled' : ''}>
+      <input type="text" id="work-ended-note-input" data-field="endedNote" value="${escAttr(values.endedNote ?? '')}" maxlength="2000"${busy ? ' disabled' : ''}>
     </fieldset>` : ''}
-    <p class="current-work-meta">生命周期会按操作变为：${esc(operation === 'pause' ? lifecycleLabels.paused : operation === 'end' ? lifecycleLabels.ended : lifecycleLabels.active)}。上层目标、工程阶段、范围建议由服务端按当前状态重新解析，表单不会让它们变成自由 JSON。</p>
+    <p class="current-work-meta">生命周期会按操作变为：${esc(operation === 'pause' ? lifecycleLabels.paused : operation === 'end' ? lifecycleLabels.ended : lifecycleLabels.active)}。上层目标、工程阶段由服务端按当前状态重新解析，表单不会让它们变成自由 JSON。</p>
     <div class="current-work-actions">
       <button type="button" data-work-action="preview"${busy ? ' disabled' : ''}>生成预览</button>
       <button type="button" data-work-action="save"${options.phase === 'previewReady' ? '' : ' hidden'}>保存（写入后回读）</button>
       <button type="button" data-work-action="cancel"${busy ? ' disabled' : ''}>取消</button>
     </div>
     <p class="current-work-meta" data-work-testid="work-phase" data-phase="${escAttr(options.phase ?? 'editing')}">${esc({
-      editing: '编辑中：还没有生成预览。', previewing: '正在生成预览（不写任何文件）…', previewReady: '预览已生成：确认差异后再保存。',
+      editing: isDraftOpen ? '编辑中（未保存草稿）：还没有生成预览。' : '编辑中：还没有生成预览。',
+      previewing: '正在生成预览（不写任何文件）…', previewReady: '预览已生成：确认差异后再保存。',
       saving: '正在保存…', saved: '已保存并回读。', conflict: '保存冲突：请重新读取后重试。',
       failed: '保存失败：草稿仍保留。', unknown: '保存结果未知：正在独立读取状态。',
     }[options.phase ?? 'editing'] ?? '编辑中。')}</p>
